@@ -1,0 +1,104 @@
+.App {
+  text-align: center;
+}
+
+.App-logo {
+  height: 40vmin;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .App-logo {
+    animation: App-logo-spin infinite 20s linear;
+  }
+}
+
+.App-header {
+  background-color: #282c34;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  font-size: calc(10px + 2vmin);
+  color: white;
+}
+
+.App-link {
+  color: #61dafb;
+}
+
+@keyframes App-logo-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Fixed bottom navbar - floating style */
+.bottom-navbar {
+  position: fixed;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background-color: #fff;
+  border-radius: 50px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+  z-index: 1000;
+  padding: 12px 24px;
+  width: auto;
+  min-width: fit-content;
+}
+
+
+.btn-nav {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 8px 16px;
+  border: none;
+  background: transparent;
+  color: #6c757d;
+  transition: all 0.2s ease;
+  min-width: auto;
+  border-radius: 20px;
+  text-decoration: none;
+}
+
+.btn-nav:hover {
+  background-color: rgba(13, 110, 253, 0.1);
+  color: #0d6efd;
+}
+
+.btn-nav:focus {
+  color: #0d6efd;
+  background: transparent;
+}
+
+.btn-nav.active {
+  color: #0d6efd;
+  background-color: rgba(13, 110, 253, 0.15);
+}
+
+.btn-nav:active {
+  color: #0a58ca;
+}
+
+.btn-nav svg {
+  margin-bottom: 2px;
+}
+
+.nav-label {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+}
+
+/* Add padding to body to prevent content from being hidden behind floating navbar */
+body {
+  padding-bottom: 100px;
+}
