@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import API_ENDPOINTS from '../config/api';
 
 function Settings() {
   const [categories, setCategories] = useState([]);
@@ -12,7 +13,7 @@ function Settings() {
 
   const fetchCategories = async () => {
     try {
-      const response = await fetch('http://localhost:3060/api/categories');
+      const response = await fetch(API_ENDPOINTS.CATEGORIES);
       if (response.ok) {
         const data = await response.json();
         setCategories(data);
@@ -58,7 +59,7 @@ function Settings() {
 
   return (
     <div className="container mt-4">
-      <h2 className="mb-4">Settings</h2>
+      <h2 className="mb-4" style={{ fontWeight: '600', color: '#1e293b' }}>Settings</h2>
 
       {/* Categories Section */}
       <div className="card mb-4">
@@ -68,7 +69,7 @@ function Settings() {
           {/* Add Category Form */}
           <form onSubmit={handleAddCategory} className="mb-4">
             <div className="row g-3">
-              <div className="col-md-10">
+              <div className="col-12 col-md-10">
                 <input
                   type="text"
                   className="form-control"
@@ -78,7 +79,7 @@ function Settings() {
                   required
                 />
               </div>
-              <div className="col-md-2">
+              <div className="col-12 col-md-2">
                 <button
                   type="submit"
                   className="btn btn-primary w-100"

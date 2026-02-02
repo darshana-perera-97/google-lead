@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import API_ENDPOINTS from '../config/api';
 
 function Link() {
   const [status, setStatus] = useState('disconnected');
@@ -15,7 +16,7 @@ function Link() {
 
   const fetchWhatsAppStatus = async () => {
     try {
-      const response = await fetch('http://localhost:3060/api/whatsapp/status');
+      const response = await fetch(API_ENDPOINTS.WHATSAPP_STATUS);
       if (response.ok) {
         const data = await response.json();
         setStatus(data.status);
@@ -31,7 +32,7 @@ function Link() {
 
   const fetchAccountInfo = async () => {
     try {
-      const response = await fetch('http://localhost:3060/api/whatsapp/account');
+      const response = await fetch(API_ENDPOINTS.WHATSAPP_ACCOUNT);
       if (response.ok) {
         const data = await response.json();
         setAccountInfo(data);
@@ -48,7 +49,7 @@ function Link() {
 
     setLoading(true);
     try {
-      const response = await fetch('http://localhost:3060/api/whatsapp/disconnect', {
+      const response = await fetch(API_ENDPOINTS.WHATSAPP_DISCONNECT, {
         method: 'POST',
       });
       if (response.ok) {
@@ -67,7 +68,7 @@ function Link() {
 
   return (
     <div className="container mt-4">
-      <h2 className="mb-4">WhatsApp Connection</h2>
+      <h2 className="mb-4" style={{ fontWeight: '600', color: '#1e293b' }}>WhatsApp Connection</h2>
 
       {status === 'disconnected' && (
         <div className="card">
@@ -93,7 +94,7 @@ function Link() {
                 src={qrCode} 
                 alt="WhatsApp QR Code" 
                 className="img-fluid"
-                style={{ maxWidth: '300px' }}
+                style={{ maxWidth: '100%', width: '300px', height: 'auto' }}
               />
             </div>
             <p className="text-muted mt-3 small">

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import API_ENDPOINTS from '../config/api';
 
 function Home() {
   const [searchText, setSearchText] = useState('');
@@ -27,7 +28,7 @@ function Home() {
 
   const fetchCategories = async () => {
     try {
-      const response = await fetch('http://localhost:3060/api/categories');
+      const response = await fetch(API_ENDPOINTS.CATEGORIES);
       if (response.ok) {
         const data = await response.json();
         setCategories(data);
@@ -39,7 +40,7 @@ function Home() {
 
   const fetchTotalLeads = async () => {
     try {
-      const response = await fetch('http://localhost:3060/api/leads');
+      const response = await fetch(API_ENDPOINTS.LEADS);
       if (response.ok) {
         const data = await response.json();
         setTotalLeads(data.length);
@@ -51,7 +52,7 @@ function Home() {
 
   const fetchAnalytics = async () => {
     try {
-      const response = await fetch('http://localhost:3060/api/analytics');
+      const response = await fetch(API_ENDPOINTS.ANALYTICS);
       if (response.ok) {
         const data = await response.json();
         setReachedLeads(data.reachedLeads || 0);
@@ -63,7 +64,7 @@ function Home() {
 
   const fetchGreeting = async () => {
     try {
-      const response = await fetch('http://localhost:3060/api/greeting');
+      const response = await fetch(API_ENDPOINTS.GREETING);
       if (response.ok) {
         const data = await response.json();
         setGreeting(data.greeting);
@@ -75,7 +76,7 @@ function Home() {
 
   const fetchLastSearchResults = async () => {
     try {
-      const response = await fetch('http://localhost:3060/api/last-search');
+      const response = await fetch(API_ENDPOINTS.LAST_SEARCH);
       if (response.ok) {
         const data = await response.json();
         if (data.results && data.results.organic && data.results.organic.length > 0) {
@@ -89,6 +90,48 @@ function Home() {
     } catch (error) {
       console.error('Error fetching last search results:', error);
     }
+  };
+
+  // Validate and format Sri Lankan mobile number (+947XXXXXXXX format only)
+  const isValidMobileNumber = (phone) => {
+    if (!phone || typeof phone !== 'string') {
+      return null;
+    }
+    
+    // Remove all spaces, dashes, and parentheses
+    let cleaned = phone.replace(/[\s\-\(\)]/g, '');
+    
+    // Remove leading + if present
+    if (cleaned.startsWith('+')) {
+      cleaned = cleaned.substring(1);
+    }
+    
+    // Check if it's a Sri Lankan mobile number
+    // Mobile numbers: +947XXXXXXXX (12 digits total with country code)
+    // Formats: +947XXXXXXXX, 947XXXXXXXX, 07XXXXXXXX
+    
+    // Pattern 1: Already in +947XXXXXXXX format (12 digits)
+    if (cleaned.startsWith('947') && cleaned.length === 12) {
+      return `+${cleaned}`;
+    }
+    
+    // Pattern 2: Starts with 07 (10 digits) - convert to +947
+    if (cleaned.startsWith('07') && cleaned.length === 10) {
+      return `+94${cleaned}`;
+    }
+    
+    // Pattern 3: Starts with 947 (11 digits) - add +
+    if (cleaned.startsWith('947') && cleaned.length === 11) {
+      return `+${cleaned}`;
+    }
+    
+    // Pattern 4: Starts with 7 (9 digits) - add +94
+    if (cleaned.startsWith('7') && cleaned.length === 9) {
+      return `+94${cleaned}`;
+    }
+    
+    // Not a valid mobile number format - return null to filter out
+    return null;
   };
 
   const handleSearch = async () => {
@@ -106,7 +149,7 @@ function Home() {
     setSearchResults(null);
     
     try {
-      const response = await fetch('http://localhost:3060/api/search', {
+      const response = await fetch(API_ENDPOINTS.SEARCH, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -146,36 +189,26 @@ function Home() {
         // Extract website from link
         const website = result.link || '';
         
-        // Try to extract contact number from snippet, attributes, or sitelinks
-        let contactNumber = '';
-        if (result.snippet) {
+        // Get phone number from result (already validated by backend)
+        let contactNumber = result.phone || '';
+        
+        // If phone not in result, try to extract from snippet
+        if (!contactNumber && result.snippet) {
           const phoneRegex = /(\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g;
           const phoneMatch = result.snippet.match(phoneRegex);
           if (phoneMatch) {
             contactNumber = phoneMatch[0];
           }
         }
-        if (!contactNumber && result.attributes) {
-          Object.entries(result.attributes).forEach(([key, value]) => {
-            if (typeof value === 'string' && /phone|contact|tel/i.test(key)) {
-              contactNumber = value;
-            } else if (typeof value === 'string') {
-              const phoneRegex = /(\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g;
-              const phoneMatch = value.match(phoneRegex);
-              if (phoneMatch) {
-                contactNumber = phoneMatch[0];
-              }
-            }
-          });
-        }
+        
+        // Validate mobile number (filter out landlines)
+        contactNumber = isValidMobileNumber(contactNumber);
 
-        // Only add if we have at least business name and website
-        if (businessName && website) {
-          // Remove spaces from contact number
-          const cleanedContactNumber = contactNumber.trim().replace(/\s+/g, '') || 'N/A';
+        // Only add if we have business name, website, and valid mobile number
+        if (businessName && website && contactNumber) {
           leads.push({
             businessName: businessName.trim(),
-            contactNumber: cleanedContactNumber,
+            contactNumber: contactNumber,
             website: website.trim(),
             searchPhrase: searchPhrase.trim()
           });
@@ -277,19 +310,30 @@ function Home() {
           emailId = extractEmail(result.title || '');
         }
 
+        // Validate mobile number before saving
+        let contactNumber = result.phone || '';
+        if (contactNumber) {
+          contactNumber = isValidMobileNumber(contactNumber);
+        }
+        
+        // Only save if we have a valid mobile number
+        if (!contactNumber) {
+          return null;
+        }
+        
         return {
           leadId: `lead_${Date.now()}_${index}`,
           businessName: result.title || '',
-          contactNumber: result.phone ? result.phone.replace(/\s+/g, '') : '',
+          contactNumber: contactNumber,
           emailId: emailId || '',
           website: result.link || '',
           searchPhrase: searchText.trim(),
           category: category || '',
           savedDate: new Date().toISOString()
         };
-      });
+      }).filter(lead => lead !== null); // Remove null entries
 
-      const response = await fetch('http://localhost:3060/api/leads', {
+      const response = await fetch(API_ENDPOINTS.LEADS, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -299,7 +343,48 @@ function Home() {
 
       if (response.ok) {
         const data = await response.json();
-        alert(`Successfully saved ${data.count} leads! Total leads: ${data.totalLeads}`);
+        
+        // Get the leadIds of the saved leads
+        const savedLeadIds = data.savedLeadIds || [];
+        
+        if (savedLeadIds.length > 0) {
+          // Automatically send messages to the newly saved leads
+          try {
+            const sendResponse = await fetch(API_ENDPOINTS.WHATSAPP_SEND_MESSAGES, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ leadIds: savedLeadIds }),
+            });
+
+            if (sendResponse.ok) {
+              const sendData = await sendResponse.json();
+              const successCount = sendData.summary.success || 0;
+              const skippedCount = sendData.summary.skipped || 0;
+              const failedCount = sendData.summary.failed || 0;
+              
+              let message = `Successfully saved ${data.count} leads! Total leads: ${data.totalLeads}\n\n`;
+              message += `Messages sent: ${successCount} successful`;
+              if (skippedCount > 0) {
+                message += `, ${skippedCount} already sent`;
+              }
+              if (failedCount > 0) {
+                message += `, ${failedCount} failed`;
+              }
+              alert(message);
+            } else {
+              const sendError = await sendResponse.json();
+              alert(`Successfully saved ${data.count} leads! Total leads: ${data.totalLeads}\n\nError sending messages: ${sendError.error || 'Failed to send messages'}`);
+            }
+          } catch (sendError) {
+            console.error('Error sending messages:', sendError);
+            alert(`Successfully saved ${data.count} leads! Total leads: ${data.totalLeads}\n\nError sending messages. Please try sending manually from Leads page.`);
+          }
+        } else {
+          alert(`Successfully saved ${data.count} leads! Total leads: ${data.totalLeads}`);
+        }
+        
         // Update total leads count
         setTotalLeads(data.totalLeads);
         // Update analytics if provided
@@ -324,45 +409,45 @@ function Home() {
   return (
     <div className="container mt-4">
       {greeting && (
-        <div className="alert alert-info mb-3">
+        <div className="alert alert-info mb-4" style={{ borderRadius: '12px', border: 'none', background: '#eff6ff', color: '#1e40af', padding: '16px 20px' }}>
           <strong>Greeting:</strong> Hi {greeting}
         </div>
       )}
       <h2 className="mb-4">Analytics</h2>
       
       {/* Analytics Cards */}
-      <div className="row g-3 mb-4">
+      <div className="row g-4 mb-5">
         <div className="col-md-6 col-lg-3">
-          <div className="card">
+          <div className="card" style={{ borderLeft: '4px solid #6366f1' }}>
             <div className="card-body">
-              <h5 className="card-title">Total Leads</h5>
-              <h3 className="text-primary">{totalLeads}</h3>
+              <h6 className="card-title text-muted mb-2" style={{ fontSize: '13px', fontWeight: '500', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Total Leads</h6>
+              <h2 className="mb-0" style={{ color: '#6366f1', fontWeight: '700', fontSize: '32px' }}>{totalLeads}</h2>
             </div>
           </div>
         </div>
         <div className="col-md-6 col-lg-3">
-          <div className="card">
+          <div className="card" style={{ borderLeft: '4px solid #10b981' }}>
             <div className="card-body">
-              <h5 className="card-title">Current Search Results</h5>
-              <h3 className="text-success">
+              <h6 className="card-title text-muted mb-2" style={{ fontSize: '13px', fontWeight: '500', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Current Search Results</h6>
+              <h2 className="mb-0" style={{ color: '#10b981', fontWeight: '700', fontSize: '32px' }}>
                 {searchResults && searchResults.organic ? searchResults.organic.length : 0}
-              </h3>
+              </h2>
             </div>
           </div>
         </div>
         <div className="col-md-6 col-lg-3">
-          <div className="card">
+          <div className="card" style={{ borderLeft: '4px solid #f59e0b' }}>
             <div className="card-body">
-              <h5 className="card-title">Reached Leads</h5>
-              <h3 className="text-warning">{reachedLeads}</h3>
+              <h6 className="card-title text-muted mb-2" style={{ fontSize: '13px', fontWeight: '500', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Reached Leads</h6>
+              <h2 className="mb-0" style={{ color: '#f59e0b', fontWeight: '700', fontSize: '32px' }}>{reachedLeads}</h2>
             </div>
           </div>
         </div>
         <div className="col-md-6 col-lg-3">
-          <div className="card">
+          <div className="card" style={{ borderLeft: '4px solid #3b82f6' }}>
             <div className="card-body">
-              <h5 className="card-title">Completed</h5>
-              <h3 className="text-info">0</h3>
+              <h6 className="card-title text-muted mb-2" style={{ fontSize: '13px', fontWeight: '500', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Completed</h6>
+              <h2 className="mb-0" style={{ color: '#3b82f6', fontWeight: '700', fontSize: '32px' }}>0</h2>
             </div>
           </div>
         </div>
@@ -371,9 +456,9 @@ function Home() {
       {/* Search Section */}
       <div className="card">
         <div className="card-body">
-          <h5 className="card-title mb-3">Search</h5>
+          <h5 className="card-title mb-4" style={{ fontSize: '20px', fontWeight: '600' }}>Search</h5>
           <div className="row g-3">
-            <div className="col-md-6">
+            <div className="col-12 col-md-6">
               <input
                 type="text"
                 className="form-control"
@@ -387,7 +472,7 @@ function Home() {
                 }}
               />
             </div>
-            <div className="col-md-4">
+            <div className="col-12 col-md-4">
               <select
                 className={`form-select ${!category ? 'is-invalid' : ''}`}
                 value={category}
@@ -417,7 +502,7 @@ function Home() {
                 <small className="text-muted d-block mt-1">Add categories in Settings page</small>
               )}
             </div>
-            <div className="col-md-2">
+            <div className="col-12 col-md-2">
               <button
                 className="btn btn-primary w-100"
                 onClick={handleSearch}
@@ -494,7 +579,7 @@ function Home() {
                         </a>
                       </td>
                       <td>
-                        {result.phone ? result.phone.replace(/\s+/g, '') : 'N/A'}
+                        {result.phone || 'N/A'}
                       </td>
                       <td>
                         <a

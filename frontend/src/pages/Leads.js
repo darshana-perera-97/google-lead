@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import API_ENDPOINTS from '../config/api';
 
 function Leads() {
   const [leads, setLeads] = useState([]);
@@ -15,7 +16,7 @@ function Leads() {
   const fetchLeads = async () => {
     setLoading(true);
     try {
-      const response = await fetch('http://localhost:3060/api/leads');
+      const response = await fetch(API_ENDPOINTS.LEADS);
       if (response.ok) {
         const data = await response.json();
         setLeads(data);
@@ -93,7 +94,7 @@ function Leads() {
 
     setSending(true);
     try {
-      const response = await fetch('http://localhost:3060/api/whatsapp/send-messages', {
+      const response = await fetch(API_ENDPOINTS.WHATSAPP_SEND_MESSAGES, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -120,10 +121,10 @@ function Leads() {
 
   return (
     <div className="container mt-4">
-      <div className="d-flex justify-content-between align-items-center mb-4">
-        <h2>Saved Leads</h2>
-        <div className="d-flex align-items-center gap-3">
-          <span className="text-muted">Total: {leads.length} leads</span>
+      <div className="d-flex flex-column flex-md-row justify-content-between align-items-start align-items-md-center mb-4 gap-3">
+        <h2 style={{ fontWeight: '600', color: '#1e293b', marginBottom: 0 }}>Saved Leads</h2>
+        <div className="d-flex flex-column flex-md-row align-items-stretch align-items-md-center gap-2 w-100 w-md-auto">
+          <span className="text-muted text-center text-md-start">Total: {leads.length} leads</span>
           {selectedLeads.length > 0 && (
             <button
               className="btn btn-success"

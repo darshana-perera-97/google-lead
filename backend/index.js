@@ -13,6 +13,9 @@ const PORT = process.env.PORT || 3060;
 app.use(cors());
 app.use(express.json());
 
+// Define build path for React app
+const buildPath = path.join(__dirname, '..', 'frontend', 'build');
+
 const charactersFilePath = path.join(__dirname, 'data', 'characters.json');
 const categoryFilePath = path.join(__dirname, 'data', 'category.json');
 const leadsFilePath = path.join(__dirname, 'data', 'leads.json');
@@ -150,6 +153,48 @@ const getGreeting = () => {
   }
 };
 
+// Validate and format Sri Lankan mobile number (+947XXXXXXXX format only)
+const isValidMobileNumber = (phone) => {
+  if (!phone || typeof phone !== 'string') {
+    return null;
+  }
+  
+  // Remove all spaces, dashes, and parentheses
+  let cleaned = phone.replace(/[\s\-\(\)]/g, '');
+  
+  // Remove leading + if present
+  if (cleaned.startsWith('+')) {
+    cleaned = cleaned.substring(1);
+  }
+  
+  // Check if it's a Sri Lankan mobile number
+  // Mobile numbers: +947XXXXXXXX (12 digits total with country code)
+  // Formats: +947XXXXXXXX, 947XXXXXXXX, 07XXXXXXXX
+  
+  // Pattern 1: Already in +947XXXXXXXX format (12 digits)
+  if (cleaned.startsWith('947') && cleaned.length === 12) {
+    return `+${cleaned}`;
+  }
+  
+  // Pattern 2: Starts with 07 (10 digits) - convert to +947
+  if (cleaned.startsWith('07') && cleaned.length === 10) {
+    return `+94${cleaned}`;
+  }
+  
+  // Pattern 3: Starts with 947 (11 digits) - add +
+  if (cleaned.startsWith('947') && cleaned.length === 11) {
+    return `+${cleaned}`;
+  }
+  
+  // Pattern 4: Starts with 7 (9 digits) - add +94
+  if (cleaned.startsWith('7') && cleaned.length === 9) {
+    return `+94${cleaned}`;
+  }
+  
+  // Not a valid mobile number format - return null to filter out
+  return null;
+};
+
 // Check if website is valid (not Facebook, LinkedIn, or social media)
 const isValidWebsite = (website) => {
   if (!website || !website.trim()) {
@@ -176,7 +221,8 @@ const isValidWebsite = (website) => {
 };
 
 // Root API endpoint
-app.get('/', (req, res) => {
+// API health check endpoint (moved to /api to avoid conflict with React app)
+app.get('/api', (req, res) => {
   res.json({
     message: 'API is running',
     status: 'success'
@@ -244,6 +290,11 @@ app.post('/api/search', async (req, res) => {
         return phone.toString().replace(/\s+/g, '');
       };
 
+      // Helper function to validate and format mobile number
+      const validateMobileNumber = (phone) => {
+        return isValidMobileNumber(phone);
+      };
+
       // The /places endpoint returns results in 'places' array, not 'organic'
       if (pageData.places && Array.isArray(pageData.places) && pageData.places.length > 0) {
         // Convert places to organic format for consistency
@@ -266,8 +317,8 @@ app.post('/api/search', async (req, res) => {
             }
           }
           
-          // Remove spaces from phone number
-          phone = cleanPhoneNumber(phone);
+          // Validate and format mobile number (filter out landlines)
+          phone = validateMobileNumber(phone);
           
           // Extract website/link from various possible fields
           let website = place.website || place.url || place.link || '';
@@ -287,17 +338,22 @@ app.post('/api/search', async (req, res) => {
             }
           }
           
+          // Only include results with valid mobile numbers
+          if (!phone) {
+            return null; // Filter out results without valid mobile numbers
+          }
+          
           return {
             position: allResults.organic.length + idx + 1,
             title: place.title || place.name || '',
             link: website || '',
             snippet: place.description || place.snippet || '',
             address: place.address || '',
-            phone: phone || '',
+            phone: phone,
             rating: place.rating || '',
             reviews: place.reviews || ''
           };
-        });
+        }).filter(place => place !== null); // Remove null entries (filtered out landlines)
         allResults.organic = allResults.organic.concat(convertedPlaces);
         pageResultsCount = convertedPlaces.length;
         console.log(`Page ${page}: Added ${convertedPlaces.length} places`);
@@ -329,8 +385,8 @@ app.post('/api/search', async (req, res) => {
             });
           }
           
-          // Remove spaces from phone number
-          phone = cleanPhoneNumber(phone);
+          // Validate and format mobile number (filter out landlines)
+          phone = validateMobileNumber(phone);
           
           // Ensure link/website is present (organic results should already have link)
           let website = result.link || result.url || result.website || '';
@@ -344,12 +400,17 @@ app.post('/api/search', async (req, res) => {
             }
           }
           
+          // Only include results with valid mobile numbers
+          if (!phone) {
+            return null; // Filter out results without valid mobile numbers
+          }
+          
           return {
             ...result,
             link: website || result.link || '',
-            phone: phone || ''
+            phone: phone
           };
-        });
+        }).filter(result => result !== null); // Remove null entries (filtered out landlines)
         allResults.organic = allResults.organic.concat(enrichedOrganic);
         pageResultsCount = enrichedOrganic.length;
         console.log(`Page ${page}: Added ${enrichedOrganic.length} organic results`);
@@ -387,11 +448,56 @@ app.post('/api/search', async (req, res) => {
 
     console.log(`Total results: ${allResults.organic.length} organic results from ${page - 1} pages`);
     
-    // Save last search results
+    // Filter out leads that have already been saved
+    const existingLeads = readLeads();
+    const filteredResults = {
+      ...allResults,
+      organic: allResults.organic.filter(result => {
+        // Check if this result matches any existing lead
+        const resultPhone = result.phone || '';
+        const resultTitle = (result.title || '').trim().toLowerCase();
+        const resultLink = (result.link || '').trim().toLowerCase();
+        
+        // Check against existing leads
+        const isDuplicate = existingLeads.some(lead => {
+          const leadPhone = (lead.contactNumber || '').trim();
+          const leadBusinessName = (lead.businessName || '').trim().toLowerCase();
+          const leadWebsite = (lead.website || '').trim().toLowerCase();
+          
+          // Match by phone number (most reliable)
+          if (resultPhone && leadPhone && resultPhone === leadPhone) {
+            return true;
+          }
+          
+          // Match by business name + phone number
+          if (resultTitle && leadBusinessName && resultPhone && leadPhone) {
+            if (resultTitle === leadBusinessName && resultPhone === leadPhone) {
+              return true;
+            }
+          }
+          
+          // Match by website + phone number
+          if (resultLink && leadWebsite && resultPhone && leadPhone) {
+            if (resultLink === leadWebsite && resultPhone === leadPhone) {
+              return true;
+            }
+          }
+          
+          return false;
+        });
+        
+        // Return false to filter out duplicates
+        return !isDuplicate;
+      })
+    };
+    
+    console.log(`Filtered results: ${filteredResults.organic.length} results (removed ${allResults.organic.length - filteredResults.organic.length} already saved leads)`);
+    
+    // Save last search results (filtered)
     const lastSearchData = {
       search: search.trim(),
       category: category || '',
-      results: allResults,
+      results: filteredResults,
       timestamp: new Date().toISOString()
     };
     writeLastSearchResults(lastSearchData);
@@ -400,7 +506,7 @@ app.post('/api/search', async (req, res) => {
       message: 'Search completed',
       search,
       category,
-      results: allResults
+      results: filteredResults
     });
   } catch (error) {
     console.error('Error calling Serper API:', error.response?.data || error.message);
@@ -421,6 +527,7 @@ app.post('/api/leads', (req, res) => {
 
   const existingLeads = readLeads();
   let savedCount = 0;
+  const savedLeadIds = [];
   
   // Add new leads (avoid duplicates based on leadId or businessName + contactNumber + searchPhrase)
   leads.forEach(newLead => {
@@ -448,9 +555,12 @@ app.post('/api/leads', (req, res) => {
         website: newLead.website || '',
         searchPhrase: newLead.searchPhrase || '',
         category: newLead.category || '',
-        savedDate: newLead.savedDate || new Date().toISOString()
+        savedDate: newLead.savedDate || new Date().toISOString(),
+        reached: false,
+        messageSent: false
       };
       existingLeads.push(leadToSave);
+      savedLeadIds.push(leadToSave.leadId);
       savedCount++;
     }
   });
@@ -464,6 +574,7 @@ app.post('/api/leads', (req, res) => {
     message: 'Leads saved successfully',
     count: savedCount,
     totalLeads: existingLeads.length,
+    savedLeadIds: savedLeadIds,
     analytics
   });
 });
@@ -777,6 +888,17 @@ app.post('/api/whatsapp/send-messages', async (req, res) => {
       continue;
     }
 
+    // Check if messages have already been sent to this number
+    if (lead.messageSent || lead.reached) {
+      results.push({ 
+        leadId, 
+        status: 'skipped', 
+        message: 'Messages already sent to this number',
+        phoneNumber: lead.contactNumber
+      });
+      continue;
+    }
+
     // Get messages for the lead's category
     const categoryMessages = messages.find(msg => msg.category === lead.category);
     if (!categoryMessages) {
@@ -850,13 +972,41 @@ app.post('/api/whatsapp/send-messages', async (req, res) => {
     summary: {
       total: results.length,
       success: results.filter(r => r.status === 'success').length,
+      skipped: results.filter(r => r.status === 'skipped').length,
       failed: results.filter(r => r.status === 'error').length
     }
   });
 });
 
+// Serve React app - catch all handler (must be after all API routes)
+if (fs.existsSync(buildPath)) {
+  // Serve static files from React build folder
+  app.use(express.static(buildPath));
+  console.log('Serving React app from:', buildPath);
+  
+  // Catch all handler: send back React's index.html file for client-side routing
+  app.get('*', (req, res) => {
+    // Don't serve index.html for API routes
+    if (req.path.startsWith('/api/')) {
+      return res.status(404).json({ error: 'API endpoint not found' });
+    }
+    res.sendFile(path.join(buildPath, 'index.html'));
+  });
+} else {
+  console.warn('React build folder not found. Run "npm run build" in the frontend directory.');
+  // Fallback for development
+  app.get('*', (req, res) => {
+    if (!req.path.startsWith('/api/')) {
+      res.status(404).send('React build folder not found. Please run "npm run build" in the frontend directory.');
+    }
+  });
+}
+
 // Start server
 app.listen(PORT, () => {
   console.log(`Server is running on http://localhost:${PORT}`);
+  if (fs.existsSync(buildPath)) {
+    console.log('React app is being served from the build folder');
+  }
 });
 
