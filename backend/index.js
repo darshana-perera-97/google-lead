@@ -919,11 +919,37 @@ app.post('/api/whatsapp/send-messages', async (req, res) => {
 
     try {
       // Format phone number (remove + and spaces, add country code if needed)
-      let formattedNumber = phoneNumber.replace(/\s+/g, '').replace(/\+/g, '');
-      if (!formattedNumber.startsWith('94') && formattedNumber.length === 9) {
+      let formattedNumber = phoneNumber.replace(/\s+/g, '').replace(/\+/g, '').replace(/-/g, '');
+      
+      // Handle Sri Lankan numbers
+      if (formattedNumber.startsWith('0') && formattedNumber.length === 10) {
+        // Remove leading 0 and add country code
+        formattedNumber = '94' + formattedNumber.substring(1);
+      } else if (!formattedNumber.startsWith('94') && formattedNumber.length === 9) {
         formattedNumber = '94' + formattedNumber; // Add SL country code
+      } else if (formattedNumber.startsWith('+947')) {
+        // Already has +947, just remove the +
+        formattedNumber = formattedNumber.substring(1);
       }
+      
+      // Validate the formatted number
+      if (!formattedNumber.startsWith('94') || formattedNumber.length < 11 || formattedNumber.length > 12) {
+        throw new Error(`Invalid phone number format: ${phoneNumber} (formatted: ${formattedNumber})`);
+      }
+      
       const chatId = `${formattedNumber}@c.us`;
+      
+      // Check if the number exists in WhatsApp before sending
+      try {
+        const numberExists = await whatsappClient.getNumberId(chatId);
+        if (!numberExists) {
+          throw new Error(`Phone number ${phoneNumber} is not registered on WhatsApp`);
+        }
+      } catch (checkError) {
+        // If getNumberId fails, it might mean the number doesn't exist
+        // Log but continue - sometimes this check can fail even for valid numbers
+        console.warn(`Could not verify number ${phoneNumber}:`, checkError.message);
+      }
 
       // Send greeting
       const greetingMessage = `Hi ${greeting}`;
@@ -960,7 +986,23 @@ app.post('/api/whatsapp/send-messages', async (req, res) => {
       });
     } catch (error) {
       console.error(`Error sending message to ${leadId}:`, error);
-      results.push({ leadId, status: 'error', message: error.message });
+      
+      // Provide more user-friendly error messages
+      let errorMessage = error.message;
+      if (error.message.includes('No LID for user') || error.message.includes('not registered')) {
+        errorMessage = `Phone number ${phoneNumber} is not registered on WhatsApp or is invalid`;
+      } else if (error.message.includes('Invalid phone number')) {
+        errorMessage = error.message;
+      } else if (error.message.includes('not found')) {
+        errorMessage = `Contact not found: ${phoneNumber}`;
+      }
+      
+      results.push({ 
+        leadId, 
+        status: 'error', 
+        message: errorMessage,
+        phoneNumber: phoneNumber
+      });
     }
 
     // Add random delay between every 2 leads (5-10 seconds)
