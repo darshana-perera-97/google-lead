@@ -754,7 +754,20 @@ const initWhatsApp = () => {
   whatsappClient = new Client({
     authStrategy: new LocalAuth({
       dataPath: path.join(__dirname, 'data', 'whatsapp-session')
-    })
+    }),
+    puppeteer: {
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--no-first-run',
+        '--no-zygote',
+        '--single-process', // This can help with some sandbox issues
+        '--disable-gpu'
+      ]
+    }
   });
 
   whatsappClient.on('qr', async (qr) => {
