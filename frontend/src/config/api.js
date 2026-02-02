@@ -1,8 +1,6 @@
-// Backend API Configuration
-// Change this URL to point to your backend server
-// For production (same server): use '/api' (relative URL)
-// For development: use 'http://localhost:3060/api' (absolute URL)
-export const API_BASE_URL = process.env.REACT_APP_API_URL || '/api';
+// ⚡ CHANGE THIS LINE TO SET YOUR BACKEND URL ⚡
+export const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:3060/api'; // Change '/api' to 'http://localhost:3060/api' for development
+// export const API_BASE_URL = process.env.REACT_APP_API_URL || '/api'; 
 
 // API Endpoints
 export const API_ENDPOINTS = {
@@ -31,6 +29,9 @@ export const API_ENDPOINTS = {
   
   // Greeting
   GREETING: `${API_BASE_URL}/greeting`,
+  
+  // Google Sheets
+  GOOGLE_SHEETS_SAVE: `${API_BASE_URL}/google-sheets/save`,
 };
 
 export default API_ENDPOINTS;

@@ -9,6 +9,8 @@ function Home() {
   const [loading, setLoading] = useState(false);
   const [extractedLeads, setExtractedLeads] = useState([]);
   const [savingLeads, setSavingLeads] = useState(false);
+  const [sendingMessages, setSendingMessages] = useState(false);
+  const [savingToSheets, setSavingToSheets] = useState(false);
   const [selectedItems, setSelectedItems] = useState(new Set());
   const [selectAll, setSelectAll] = useState(false);
   const [totalLeads, setTotalLeads] = useState(0);
@@ -285,6 +287,265 @@ function Home() {
     return emailMatch ? emailMatch[0] : '';
   };
 
+  // Download search results as CSV
+  const handleDownloadCSV = () => {
+    if (!searchResults || !searchResults.organic || searchResults.organic.length === 0) {
+      alert('No search results to download');
+      return;
+    }
+
+    // CSV headers
+    const headers = ['Title', 'Contact Number', 'Website', 'Snippet', 'Email', 'Search Phrase', 'Category'];
+    
+    // Convert search results to CSV rows
+    const csvRows = searchResults.organic.map((result) => {
+      // Extract email from snippet, link, or title
+      let emailId = extractEmail(result.snippet || '');
+      if (!emailId) {
+        emailId = extractEmail(result.link || '');
+      }
+      if (!emailId) {
+        emailId = extractEmail(result.title || '');
+      }
+
+      // Escape CSV values (handle commas, quotes, and newlines)
+      const escapeCSV = (value) => {
+        if (value === null || value === undefined) return '';
+        const stringValue = String(value);
+        // If value contains comma, quote, or newline, wrap in quotes and escape quotes
+        if (stringValue.includes(',') || stringValue.includes('"') || stringValue.includes('\n')) {
+          return `"${stringValue.replace(/"/g, '""')}"`;
+        }
+        return stringValue;
+      };
+
+      return [
+        escapeCSV(result.title || ''),
+        escapeCSV(result.phone || 'N/A'),
+        escapeCSV(result.link || ''),
+        escapeCSV(result.snippet || ''),
+        escapeCSV(emailId || ''),
+        escapeCSV(searchText || ''),
+        escapeCSV(category || '')
+      ].join(',');
+    });
+
+    // Combine headers and rows
+    const csvContent = [
+      headers.join(','),
+      ...csvRows
+    ].join('\n');
+
+    // Create blob and download
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    const url = URL.createObjectURL(blob);
+    
+    // Generate filename with timestamp
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+    const filename = `search-results-${searchText.replace(/[^a-z0-9]/gi, '-').toLowerCase()}-${timestamp}.csv`;
+    
+    link.setAttribute('href', url);
+    link.setAttribute('download', filename);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // Save search results to Google Sheets
+  const handleSaveToGoogleSheets = async () => {
+    if (!searchResults || !searchResults.organic || searchResults.organic.length === 0) {
+      alert('No search results to save');
+      return;
+    }
+
+    if (!searchText.trim()) {
+      alert('Search phrase is required');
+      return;
+    }
+
+    setSavingToSheets(true);
+    try {
+      const response = await fetch(API_ENDPOINTS.GOOGLE_SHEETS_SAVE, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          searchResults: searchResults,
+          searchPhrase: searchText.trim(),
+          category: category || ''
+        }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const message = `Search results saved to Google Sheets!\n\nSheet Name: ${data.sheetName}\nRows: ${data.rowCount}\n\nWould you like to open the spreadsheet?`;
+        if (window.confirm(message)) {
+          window.open(data.spreadsheetUrl, '_blank');
+        }
+      } else {
+        const error = await response.json();
+        let errorMessage = `Error saving to Google Sheets: ${error.error || 'Unknown error'}`;
+        if (error.details) {
+          errorMessage += `\n\n${error.details}`;
+        }
+        if (error.instructions && Array.isArray(error.instructions)) {
+          errorMessage += '\n\nInstructions:\n' + error.instructions.join('\n');
+        }
+        alert(errorMessage);
+      }
+    } catch (error) {
+      console.error('Error saving to Google Sheets:', error);
+      alert('Error saving to Google Sheets. Please check your configuration.');
+    } finally {
+      setSavingToSheets(false);
+    }
+  };
+
+  // Send messages to selected leads from search results
+  const handleSendMessagesToSelected = async () => {
+    if (selectedItems.size === 0) {
+      alert('Please select at least one item to send messages');
+      return;
+    }
+
+    if (!searchResults || !searchResults.organic) {
+      alert('No search results available');
+      return;
+    }
+
+    // Check WhatsApp connection first
+    try {
+      const statusResponse = await fetch(API_ENDPOINTS.WHATSAPP_STATUS);
+      if (statusResponse.ok) {
+        const statusData = await statusResponse.json();
+        if (statusData.status !== 'connected') {
+          alert('WhatsApp is not connected. Please connect WhatsApp first from the Link page.');
+          return;
+        }
+      }
+    } catch (error) {
+      console.error('Error checking WhatsApp status:', error);
+      alert('Error checking WhatsApp status. Please ensure WhatsApp is connected.');
+      return;
+    }
+
+    setSendingMessages(true);
+    try {
+      // First, save the selected leads
+      const selectedLeads = Array.from(selectedItems).map((index) => {
+        const result = searchResults.organic[index];
+        // Extract email from snippet, link, or title
+        let emailId = extractEmail(result.snippet || '');
+        if (!emailId) {
+          emailId = extractEmail(result.link || '');
+        }
+        if (!emailId) {
+          emailId = extractEmail(result.title || '');
+        }
+
+        // Validate mobile number before saving
+        let contactNumber = result.phone || '';
+        if (contactNumber) {
+          contactNumber = isValidMobileNumber(contactNumber);
+        }
+        
+        // Only save if we have a valid mobile number
+        if (!contactNumber) {
+          return null;
+        }
+        
+        return {
+          leadId: `lead_${Date.now()}_${index}`,
+          businessName: result.title || '',
+          contactNumber: contactNumber,
+          emailId: emailId || '',
+          website: result.link || '',
+          searchPhrase: searchText.trim(),
+          category: category || '',
+          savedDate: new Date().toISOString()
+        };
+      }).filter(lead => lead !== null); // Remove null entries
+
+      if (selectedLeads.length === 0) {
+        alert('No valid leads with mobile numbers found in selected items');
+        setSendingMessages(false);
+        return;
+      }
+
+      // Save leads first
+      const saveResponse = await fetch(API_ENDPOINTS.LEADS, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ leads: selectedLeads }),
+      });
+
+      if (!saveResponse.ok) {
+        const error = await saveResponse.json();
+        alert(error.error || 'Error saving leads');
+        setSendingMessages(false);
+        return;
+      }
+
+      const saveData = await saveResponse.json();
+      const savedLeadIds = saveData.savedLeadIds || [];
+
+      if (savedLeadIds.length === 0) {
+        alert('No leads were saved. They may already exist.');
+        setSendingMessages(false);
+        return;
+      }
+
+      // Now send messages to the saved leads
+      const sendResponse = await fetch(API_ENDPOINTS.WHATSAPP_SEND_MESSAGES, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ leadIds: savedLeadIds }),
+      });
+
+      if (sendResponse.ok) {
+        const sendData = await sendResponse.json();
+        const successCount = sendData.summary.success || 0;
+        const skippedCount = sendData.summary.skipped || 0;
+        const failedCount = sendData.summary.failed || 0;
+        
+        let message = `Messages sent to ${savedLeadIds.length} leads!\n\n`;
+        message += `✓ ${successCount} successful`;
+        if (skippedCount > 0) {
+          message += `\n⚠ ${skippedCount} already sent`;
+        }
+        if (failedCount > 0) {
+          message += `\n✗ ${failedCount} failed`;
+        }
+        alert(message);
+      } else {
+        const sendError = await sendResponse.json();
+        alert(`Leads saved successfully, but error sending messages: ${sendError.error || 'Failed to send messages'}`);
+      }
+
+      // Update total leads count
+      setTotalLeads(saveData.totalLeads);
+      // Update analytics if provided
+      if (saveData.analytics) {
+        setReachedLeads(saveData.analytics.reachedLeads || 0);
+      }
+      // Clear selections after sending
+      setSelectedItems(new Set());
+      setSelectAll(false);
+    } catch (error) {
+      console.error('Error sending messages:', error);
+      alert('Error sending messages. Please try again.');
+    } finally {
+      setSendingMessages(false);
+    }
+  };
+
   // Save selected leads to backend
   const handleSaveSelectedLeads = async () => {
     if (selectedItems.size === 0) {
@@ -530,15 +791,41 @@ function Home() {
           <div className="card-body">
             <div className="d-flex justify-content-between align-items-center mb-3">
               <h5 className="card-title mb-0">Search Results - {searchResults.organic.length} results</h5>
-              {selectedItems.size > 0 && (
+              <div className="d-flex gap-2">
                 <button
-                  className="btn btn-success"
-                  onClick={handleSaveSelectedLeads}
-                  disabled={savingLeads}
+                  className="btn btn-outline-secondary"
+                  onClick={handleDownloadCSV}
+                  title="Download search results as CSV"
                 >
-                  {savingLeads ? 'Saving...' : `Save Selected (${selectedItems.size})`}
+                  ⬇ Download CSV
                 </button>
-              )}
+                <button
+                  className="btn btn-outline-primary"
+                  onClick={handleSaveToGoogleSheets}
+                  disabled={savingToSheets}
+                  title="Save search results to Google Sheets"
+                >
+                  {savingToSheets ? 'Saving...' : '📊 Save to Google Sheets'}
+                </button>
+                {selectedItems.size > 0 && (
+                  <>
+                    <button
+                      className="btn btn-success"
+                      onClick={handleSaveSelectedLeads}
+                      disabled={savingLeads || sendingMessages}
+                    >
+                      {savingLeads ? 'Saving...' : `Save Selected (${selectedItems.size})`}
+                    </button>
+                    <button
+                      className="btn btn-primary"
+                      onClick={handleSendMessagesToSelected}
+                      disabled={savingLeads || sendingMessages}
+                    >
+                      {sendingMessages ? 'Sending...' : `Send Messages (${selectedItems.size})`}
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
             <div className="table-responsive">
               <table className="table table-striped table-hover">

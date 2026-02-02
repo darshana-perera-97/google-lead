@@ -6,6 +6,7 @@ const path = require('path');
 const axios = require('axios');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
+const { google } = require('googleapis');
 const app = express();
 const PORT = process.env.PORT || 3060;
 
@@ -881,7 +882,8 @@ app.post('/api/whatsapp/send-messages', async (req, res) => {
   const greeting = getGreeting();
   const results = [];
 
-  for (const leadId of leadIds) {
+  for (let i = 0; i < leadIds.length; i++) {
+    const leadId = leadIds[i];
     const lead = leads.find(l => l.leadId === leadId);
     if (!lead) {
       results.push({ leadId, status: 'error', message: 'Lead not found' });
@@ -960,6 +962,14 @@ app.post('/api/whatsapp/send-messages', async (req, res) => {
       console.error(`Error sending message to ${leadId}:`, error);
       results.push({ leadId, status: 'error', message: error.message });
     }
+
+    // Add random delay between every 2 leads (5-10 seconds)
+    // Delay after lead 2, 4, 6, etc. (i is 0-indexed, so i+1 is the lead number)
+    if ((i + 1) % 2 === 0 && i < leadIds.length - 1) {
+      const delaySeconds = Math.floor(Math.random() * (10 - 5 + 1)) + 5; // Random between 5-10 seconds
+      console.log(`Waiting ${delaySeconds} seconds before processing next lead...`);
+      await new Promise(resolve => setTimeout(resolve, delaySeconds * 1000));
+    }
   }
 
   // Save updated leads
@@ -976,6 +986,212 @@ app.post('/api/whatsapp/send-messages', async (req, res) => {
       failed: results.filter(r => r.status === 'error').length
     }
   });
+});
+
+// Helper function to extract email from text
+const extractEmailFromText = (text) => {
+  if (!text) return '';
+  const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
+  const emailMatch = text.match(emailRegex);
+  return emailMatch ? emailMatch[0] : '';
+};
+
+// Save search results to Google Sheets
+app.post('/api/google-sheets/save', async (req, res) => {
+  try {
+    const { searchResults, searchPhrase, category } = req.body;
+
+    if (!searchResults || !searchResults.organic || !Array.isArray(searchResults.organic)) {
+      return res.status(400).json({ error: 'Invalid search results data' });
+    }
+
+    if (!searchPhrase) {
+      return res.status(400).json({ error: 'Search phrase is required' });
+    }
+
+    // Check if Google Sheets credentials are configured
+    if (!process.env.GOOGLE_SHEETS_SPREADSHEET_ID) {
+      return res.status(400).json({ 
+        error: 'Google Sheets not configured. Please set GOOGLE_SHEETS_SPREADSHEET_ID in .env file' 
+      });
+    }
+
+    // Initialize Google Sheets API
+    let auth;
+    if (process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL && process.env.GOOGLE_PRIVATE_KEY) {
+      // Use service account authentication
+      auth = new google.auth.JWT(
+        process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
+        null,
+        process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+        ['https://www.googleapis.com/auth/spreadsheets']
+      );
+    } else {
+      return res.status(400).json({ 
+        error: 'Google Sheets authentication not configured. Please set GOOGLE_SERVICE_ACCOUNT_EMAIL and GOOGLE_PRIVATE_KEY in .env file' 
+      });
+    }
+
+    const sheets = google.sheets({ version: 'v4', auth });
+    const spreadsheetId = process.env.GOOGLE_SHEETS_SPREADSHEET_ID;
+    const serviceAccountEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL;
+
+    // Log for debugging (remove sensitive info in production)
+    console.log(`Attempting to access spreadsheet: ${spreadsheetId}`);
+    console.log(`Using service account: ${serviceAccountEmail}`);
+
+    // Sanitize sheet name (Google Sheets has restrictions on sheet names)
+    let sheetName = searchPhrase.trim();
+    // Remove invalid characters and limit length
+    sheetName = sheetName.replace(/[\\\/\?\*\[\]:]/g, '').substring(0, 100);
+    if (!sheetName) {
+      sheetName = 'Search Results';
+    }
+
+    // Prepare data
+    const headers = [['Title', 'Contact Number', 'Website', 'Snippet', 'Email', 'Search Phrase', 'Category']];
+    const rows = searchResults.organic.map((result) => {
+      let emailId = extractEmailFromText(result.snippet || '');
+      if (!emailId) {
+        emailId = extractEmailFromText(result.link || '');
+      }
+      if (!emailId) {
+        emailId = extractEmailFromText(result.title || '');
+      }
+
+      return [
+        result.title || '',
+        result.phone || 'N/A',
+        result.link || '',
+        result.snippet || '',
+        emailId || '',
+        searchPhrase || '',
+        category || ''
+      ];
+    });
+
+    const values = [...headers, ...rows];
+
+    // Check if sheet exists, if not create it
+    try {
+      // First, verify we can access the spreadsheet
+      const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
+      console.log(`Successfully accessed spreadsheet: ${spreadsheet.data.properties.title}`);
+      
+      const existingSheets = spreadsheet.data.sheets.map(sheet => sheet.properties.title);
+      
+      if (!existingSheets.includes(sheetName)) {
+        // Create new sheet
+        await sheets.spreadsheets.batchUpdate({
+          spreadsheetId,
+          requestBody: {
+            requests: [{
+              addSheet: {
+                properties: {
+                  title: sheetName
+                }
+              }
+            }]
+          }
+        });
+      } else {
+        // Clear existing sheet data (optional - comment out if you want to append)
+        await sheets.spreadsheets.values.clear({
+          spreadsheetId,
+          range: `${sheetName}!A1:Z10000`
+        });
+      }
+    } catch (error) {
+      // If spreadsheet doesn't exist or access denied
+      if (error.code === 404) {
+        return res.status(404).json({ 
+          error: 'Google Spreadsheet not found. Please check the GOOGLE_SHEETS_SPREADSHEET_ID.',
+          details: 'Make sure the Spreadsheet ID in your .env file matches the ID in your Google Sheets URL.'
+        });
+      }
+      if (error.code === 403) {
+        const serviceAccountEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || 'your-service-account@...';
+        return res.status(403).json({ 
+          error: 'Access denied. Please ensure the service account has access to the spreadsheet.',
+          details: `Share your Google Spreadsheet with this email address: ${serviceAccountEmail}`,
+          instructions: [
+            '1. Open your Google Spreadsheet',
+            '2. Click the "Share" button (top right)',
+            `3. Add this email: ${serviceAccountEmail}`,
+            '4. Give it "Editor" access',
+            '5. Click "Send" or "Share"',
+            '6. Try saving again'
+          ]
+        });
+      }
+      throw error;
+    }
+
+    // Write data to sheet
+    try {
+      await sheets.spreadsheets.values.update({
+        spreadsheetId,
+        range: `${sheetName}!A1`,
+        valueInputOption: 'USER_ENTERED',
+        resource: {
+          values: values
+        }
+      });
+    } catch (writeError) {
+      console.error('Error writing to Google Sheets:', writeError);
+      if (writeError.code === 403) {
+        const serviceAccountEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || 'your-service-account@...';
+        return res.status(403).json({ 
+          error: 'Access denied when writing to sheet.',
+          details: `The service account ${serviceAccountEmail} needs Editor access to write data.`,
+          instructions: [
+            '1. Make sure you shared the spreadsheet with the service account email',
+            `2. Service account email: ${serviceAccountEmail}`,
+            '3. Permission must be "Editor" (not Viewer or Commenter)',
+            '4. Wait a few seconds after sharing for permissions to propagate',
+            '5. Try again'
+          ]
+        });
+      }
+      throw writeError;
+    }
+
+    // Get the spreadsheet URL
+    const spreadsheetUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}`;
+
+    res.json({
+      message: 'Search results saved to Google Sheets successfully',
+      sheetName: sheetName,
+      rowCount: rows.length,
+      spreadsheetUrl: spreadsheetUrl
+    });
+
+  } catch (error) {
+    console.error('Error saving to Google Sheets:', error);
+    const serviceAccountEmail = process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL || 'not configured';
+    
+    // Provide more specific error messages
+    let errorMessage = 'Error saving to Google Sheets';
+    let errorDetails = error.message || 'Unknown error';
+    
+    if (error.message && error.message.includes('invalid_grant')) {
+      errorMessage = 'Authentication failed';
+      errorDetails = 'The private key or service account email is incorrect. Please check your .env file.';
+    } else if (error.message && error.message.includes('API has not been used')) {
+      errorMessage = 'Google Sheets API not enabled';
+      errorDetails = 'Please enable the Google Sheets API in your Google Cloud Console project.';
+    } else if (error.code === 403) {
+      errorMessage = 'Access denied';
+      errorDetails = `Service account ${serviceAccountEmail} needs Editor access to the spreadsheet.`;
+    }
+    
+    res.status(500).json({ 
+      error: errorMessage,
+      details: errorDetails,
+      serviceAccountEmail: serviceAccountEmail,
+      errorCode: error.code
+    });
+  }
 });
 
 // Serve React app - catch all handler (must be after all API routes)

@@ -32,7 +32,7 @@ function Settings() {
 
     setCategoryLoading(true);
     try {
-      const response = await fetch('http://localhost:3060/api/categories', {
+      const response = await fetch(API_ENDPOINTS.CATEGORIES, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

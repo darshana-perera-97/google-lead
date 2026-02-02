@@ -369,7 +369,7 @@ h2 {
 .form-check-input:focus {
   border-color: #6366f1;
   box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.1);
-}
+  }
 
 /* Textarea */
 textarea.form-control {
@@ -395,8 +395,8 @@ textarea.form-control {
   
   .card-body {
     padding: 16px;
-  }
-  
+}
+
   .card {
     margin-bottom: 16px;
     border-radius: 12px;
