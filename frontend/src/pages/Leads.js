@@ -8,10 +8,33 @@ function Leads() {
   const [itemsPerPage] = useState(10);
   const [selectedLeads, setSelectedLeads] = useState([]);
   const [sending, setSending] = useState(false);
+  const [rateLimit, setRateLimit] = useState({
+    maxLeads: 10,
+    leadsSent: 0,
+    availableLeads: 10,
+    canSend: true,
+    minutesRemaining: 0
+  });
 
   useEffect(() => {
     fetchLeads();
+    fetchRateLimitStatus();
+    // Poll rate limit status every 30 seconds
+    const interval = setInterval(fetchRateLimitStatus, 30000);
+    return () => clearInterval(interval);
   }, []);
+
+  const fetchRateLimitStatus = async () => {
+    try {
+      const response = await fetch(API_ENDPOINTS.RATE_LIMIT_STATUS);
+      if (response.ok) {
+        const data = await response.json();
+        setRateLimit(data);
+      }
+    } catch (error) {
+      console.error('Error fetching rate limit status:', error);
+    }
+  };
 
   const fetchLeads = async () => {
     setLoading(true);
@@ -61,17 +84,29 @@ function Leads() {
 
   // Handle checkbox selection
   const handleSelectLead = (leadId) => {
-    setSelectedLeads(prev => 
-      prev.includes(leadId) 
-        ? prev.filter(id => id !== leadId)
-        : [...prev, leadId]
-    );
+    setSelectedLeads(prev => {
+      if (prev.includes(leadId)) {
+        return prev.filter(id => id !== leadId);
+      } else {
+        // Limit to 10 leads max
+        if (prev.length >= 10) {
+          alert('Maximum 10 leads can be selected at once. Please deselect some leads first.');
+          return prev;
+        }
+        return [...prev, leadId];
+      }
+    });
   };
 
   // Handle select all
   const handleSelectAll = (e) => {
     if (e.target.checked) {
-      setSelectedLeads(currentLeads.map(lead => lead.leadId));
+      // Limit to 10 leads max
+      const maxSelectable = Math.min(10, currentLeads.length);
+      setSelectedLeads(currentLeads.slice(0, maxSelectable).map(lead => lead.leadId));
+      if (currentLeads.length > 10) {
+        alert('Maximum 10 leads can be selected at once. Only the first 10 leads on this page were selected.');
+      }
     } else {
       setSelectedLeads([]);
     }
@@ -85,6 +120,17 @@ function Leads() {
   const handleSendMessages = async () => {
     if (selectedLeads.length === 0) {
       alert('Please select at least one lead to send messages');
+      return;
+    }
+
+    // Check rate limit before sending
+    if (!rateLimit.canSend) {
+      alert(`Rate limit reached. You can send ${rateLimit.availableLeads} more lead(s). Next batch available in ${rateLimit.minutesRemaining} minute(s).`);
+      return;
+    }
+
+    if (selectedLeads.length > rateLimit.availableLeads) {
+      alert(`You can only send ${rateLimit.availableLeads} more lead(s) right now. Please select fewer leads or wait ${rateLimit.minutesRemaining} minute(s) for the next batch.`);
       return;
     }
 
@@ -104,12 +150,26 @@ function Leads() {
 
       if (response.ok) {
         const data = await response.json();
-        alert(`Messages sent: ${data.summary.success} successful, ${data.summary.failed} failed`);
+        let message = `Messages sent: ${data.summary.success} successful, ${data.summary.failed} failed`;
+        if (data.rateLimit) {
+          if (data.rateLimit.canSendMore) {
+            message += `\n\nYou can send ${data.rateLimit.availableLeads} more lead(s) now.`;
+          } else {
+            message += `\n\nRate limit reached. Next batch of 10 leads available in ${data.rateLimit.minutesRemaining} minute(s).`;
+          }
+        }
+        alert(message);
         setSelectedLeads([]);
         fetchLeads(); // Refresh leads to update status
+        fetchRateLimitStatus(); // Refresh rate limit status
       } else {
         const error = await response.json();
-        alert(`Error: ${error.error || 'Failed to send messages'}`);
+        if (error.error === 'Rate limit exceeded') {
+          alert(`${error.message}\n\nAvailable: ${error.availableLeads} lead(s)\nWait time: ${error.minutesRemaining} minute(s)`);
+          fetchRateLimitStatus(); // Refresh rate limit status
+        } else {
+          alert(`Error: ${error.error || 'Failed to send messages'}`);
+        }
       }
     } catch (error) {
       console.error('Error sending messages:', error);
@@ -124,12 +184,19 @@ function Leads() {
       <div className="d-flex flex-column flex-md-row justify-content-between align-items-start align-items-md-center mb-4 gap-3">
         <h2 style={{ fontWeight: '600', color: '#1e293b', marginBottom: 0 }}>Saved Leads</h2>
         <div className="d-flex flex-column flex-md-row align-items-stretch align-items-md-center gap-2 w-100 w-md-auto">
-          <span className="text-muted text-center text-md-start">Total: {leads.length} leads</span>
+          <div className="d-flex flex-column align-items-center align-items-md-start">
+            <span className="text-muted text-center text-md-start">Total: {leads.length} leads</span>
+            <small className={`text-center text-md-start ${rateLimit.canSend ? 'text-success' : 'text-warning'}`}>
+              Rate Limit: {rateLimit.leadsSent}/{rateLimit.maxLeads} sent
+              {!rateLimit.canSend && ` • Next batch in ${rateLimit.minutesRemaining} min`}
+            </small>
+          </div>
           {selectedLeads.length > 0 && (
             <button
               className="btn btn-success"
               onClick={handleSendMessages}
-              disabled={sending}
+              disabled={sending || !rateLimit.canSend || selectedLeads.length > rateLimit.availableLeads}
+              title={!rateLimit.canSend ? `Rate limit reached. Wait ${rateLimit.minutesRemaining} minute(s).` : ''}
             >
               {sending ? 'Sending...' : `Send Messages (${selectedLeads.length})`}
             </button>
@@ -186,7 +253,7 @@ function Leads() {
                             checked={selectedLeads.includes(lead.leadId)}
                             onChange={() => handleSelectLead(lead.leadId)}
                             className="form-check-input"
-                            disabled={lead.reached || lead.messageSent}
+                            disabled={lead.reached || lead.messageSent || (selectedLeads.length >= 10 && !selectedLeads.includes(lead.leadId))}
                           />
                         </td>
                         <td>

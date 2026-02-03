@@ -16,6 +16,13 @@ function Home() {
   const [totalLeads, setTotalLeads] = useState(0);
   const [reachedLeads, setReachedLeads] = useState(0);
   const [greeting, setGreeting] = useState('');
+  const [rateLimit, setRateLimit] = useState({
+    maxLeads: 10,
+    leadsSent: 0,
+    availableLeads: 10,
+    canSend: true,
+    minutesRemaining: 0
+  });
 
   useEffect(() => {
     fetchCategories();
@@ -23,10 +30,28 @@ function Home() {
     fetchAnalytics();
     fetchLastSearchResults();
     fetchGreeting();
+    fetchRateLimitStatus();
     // Update greeting every minute
     const interval = setInterval(fetchGreeting, 60000);
-    return () => clearInterval(interval);
+    // Poll rate limit status every 30 seconds
+    const rateLimitInterval = setInterval(fetchRateLimitStatus, 30000);
+    return () => {
+      clearInterval(interval);
+      clearInterval(rateLimitInterval);
+    };
   }, []);
+
+  const fetchRateLimitStatus = async () => {
+    try {
+      const response = await fetch(API_ENDPOINTS.RATE_LIMIT_STATUS);
+      if (response.ok) {
+        const data = await response.json();
+        setRateLimit(data);
+      }
+    } catch (error) {
+      console.error('Error fetching rate limit status:', error);
+    }
+  };
 
   const fetchCategories = async () => {
     try {
@@ -258,6 +283,11 @@ function Home() {
     if (newSelected.has(index)) {
       newSelected.delete(index);
     } else {
+      // Limit to 10 leads max
+      if (newSelected.size >= 10) {
+        alert('Maximum 10 leads can be selected at once. Please deselect some leads first.');
+        return;
+      }
       newSelected.add(index);
     }
     setSelectedItems(newSelected);
@@ -273,9 +303,14 @@ function Home() {
       setSelectedItems(new Set());
       setSelectAll(false);
     } else {
-      const allIndices = new Set(searchResults.organic.map((_, index) => index));
-      setSelectedItems(allIndices);
-      setSelectAll(true);
+      // Limit to 10 leads max
+      const maxSelectable = Math.min(10, searchResults.organic.length);
+      const selectedIndices = new Set(Array.from({ length: maxSelectable }, (_, i) => i));
+      setSelectedItems(selectedIndices);
+      setSelectAll(maxSelectable === searchResults.organic.length);
+      if (searchResults.organic.length > 10) {
+        alert('Maximum 10 leads can be selected at once. Only the first 10 leads were selected.');
+      }
     }
   };
 
@@ -416,6 +451,19 @@ function Home() {
       return;
     }
 
+    // Check rate limit before proceeding
+    await fetchRateLimitStatus();
+    const currentRateLimit = await fetch(API_ENDPOINTS.RATE_LIMIT_STATUS).then(r => r.json()).catch(() => rateLimit);
+    if (!currentRateLimit.canSend) {
+      alert(`Rate limit reached. You can send ${currentRateLimit.availableLeads} more lead(s). Next batch available in ${currentRateLimit.minutesRemaining} minute(s).`);
+      return;
+    }
+    
+    if (selectedItems.size > currentRateLimit.availableLeads) {
+      alert(`You can only send ${currentRateLimit.availableLeads} more lead(s) right now. Please select fewer leads or wait ${currentRateLimit.minutesRemaining} minute(s) for the next batch.`);
+      return;
+    }
+
     // Check WhatsApp connection first
     try {
       const statusResponse = await fetch(API_ENDPOINTS.WHATSAPP_STATUS);
@@ -523,10 +571,23 @@ function Home() {
         if (failedCount > 0) {
           message += `\n✗ ${failedCount} failed`;
         }
+        if (sendData.rateLimit) {
+          if (sendData.rateLimit.canSendMore) {
+            message += `\n\nYou can send ${sendData.rateLimit.availableLeads} more lead(s) now.`;
+          } else {
+            message += `\n\nRate limit reached. Next batch of 10 leads available in ${sendData.rateLimit.minutesRemaining} minute(s).`;
+          }
+        }
         alert(message);
+        fetchRateLimitStatus(); // Refresh rate limit status
       } else {
         const sendError = await sendResponse.json();
-        alert(`Leads saved successfully, but error sending messages: ${sendError.error || 'Failed to send messages'}`);
+        if (sendError.error === 'Rate limit exceeded') {
+          alert(`${sendError.message}\n\nAvailable: ${sendError.availableLeads} lead(s)\nWait time: ${sendError.minutesRemaining} minute(s)`);
+          fetchRateLimitStatus(); // Refresh rate limit status
+        } else {
+          alert(`Leads saved successfully, but error sending messages: ${sendError.error || 'Failed to send messages'}`);
+        }
       }
 
       // Update total leads count
@@ -790,7 +851,13 @@ function Home() {
         <div className="card mt-4">
           <div className="card-body">
             <div className="d-flex justify-content-between align-items-center mb-3">
-              <h5 className="card-title mb-0">Search Results - {searchResults.organic.length} results</h5>
+              <div>
+                <h5 className="card-title mb-0">Search Results - {searchResults.organic.length} results</h5>
+                <small className={`${rateLimit.canSend ? 'text-success' : 'text-warning'}`}>
+                  Rate Limit: {rateLimit.leadsSent}/{rateLimit.maxLeads} sent
+                  {!rateLimit.canSend && ` • Next batch in ${rateLimit.minutesRemaining} min`}
+                </small>
+              </div>
               <div className="d-flex gap-2">
                 <button
                   className="btn btn-outline-secondary"
@@ -819,7 +886,8 @@ function Home() {
                     <button
                       className="btn btn-primary"
                       onClick={handleSendMessagesToSelected}
-                      disabled={savingLeads || sendingMessages}
+                      disabled={savingLeads || sendingMessages || !rateLimit.canSend || selectedItems.size > rateLimit.availableLeads}
+                      title={!rateLimit.canSend ? `Rate limit reached. Wait ${rateLimit.minutesRemaining} minute(s).` : ''}
                     >
                       {sendingMessages ? 'Sending...' : `Send Messages (${selectedItems.size})`}
                     </button>
@@ -853,6 +921,7 @@ function Home() {
                           checked={selectedItems.has(index)}
                           onChange={() => handleItemSelect(index)}
                           className="form-check-input"
+                          disabled={selectedItems.size >= 10 && !selectedItems.has(index)}
                         />
                       </td>
                       <td>

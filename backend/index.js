@@ -23,6 +23,7 @@ const leadsFilePath = path.join(__dirname, 'data', 'leads.json');
 const analyticsFilePath = path.join(__dirname, 'data', 'analytics.json');
 const lastSearchResultsFilePath = path.join(__dirname, 'data', 'lastSearchResults.json');
 const messagesFilePath = path.join(__dirname, 'data', 'messages.json');
+const rateLimitFilePath = path.join(__dirname, 'data', 'rateLimit.json');
 
 // Helper function to read characters
 const readCharacters = () => {
@@ -135,6 +136,77 @@ const readMessages = () => {
 // Helper function to write messages
 const writeMessages = (messages) => {
   fs.writeFileSync(messagesFilePath, JSON.stringify(messages, null, 2));
+};
+
+// Rate limiting configuration
+const RATE_LIMIT_MAX_LEADS = 10;
+const RATE_LIMIT_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes in milliseconds
+
+// Helper function to read rate limit data
+const readRateLimit = () => {
+  try {
+    const data = fs.readFileSync(rateLimitFilePath, 'utf8');
+    return JSON.parse(data);
+  } catch (error) {
+    return {
+      leadsSent: 0,
+      lastBatchTime: null,
+      windowStartTime: null
+    };
+  }
+};
+
+// Helper function to write rate limit data
+const writeRateLimit = (rateLimitData) => {
+  fs.writeFileSync(rateLimitFilePath, JSON.stringify(rateLimitData, null, 2));
+};
+
+// Helper function to check and update rate limit
+const checkRateLimit = (requestedLeads) => {
+  const now = Date.now();
+  const rateLimit = readRateLimit();
+  
+  // Reset if cooldown period has passed
+  if (rateLimit.windowStartTime && (now - rateLimit.windowStartTime) >= RATE_LIMIT_COOLDOWN_MS) {
+    rateLimit.leadsSent = 0;
+    rateLimit.windowStartTime = null;
+    rateLimit.lastBatchTime = null;
+  }
+  
+  // Check if we can send the requested number of leads
+  const availableLeads = RATE_LIMIT_MAX_LEADS - rateLimit.leadsSent;
+  
+  if (requestedLeads > availableLeads) {
+    const timeUntilReset = rateLimit.windowStartTime 
+      ? RATE_LIMIT_COOLDOWN_MS - (now - rateLimit.windowStartTime)
+      : 0;
+    const minutesRemaining = Math.ceil(timeUntilReset / 60000);
+    
+    return {
+      allowed: false,
+      availableLeads,
+      requestedLeads,
+      leadsSent: rateLimit.leadsSent,
+      timeUntilReset,
+      minutesRemaining,
+      message: `Rate limit exceeded. You can send ${availableLeads} more lead(s) now. Next batch of 10 leads available in ${minutesRemaining} minute(s).`
+    };
+  }
+  
+  // Update rate limit
+  if (rateLimit.leadsSent === 0) {
+    rateLimit.windowStartTime = now;
+  }
+  rateLimit.leadsSent += requestedLeads;
+  rateLimit.lastBatchTime = now;
+  writeRateLimit(rateLimit);
+  
+  return {
+    allowed: true,
+    availableLeads: RATE_LIMIT_MAX_LEADS - rateLimit.leadsSent,
+    leadsSent: rateLimit.leadsSent,
+    windowStartTime: rateLimit.windowStartTime
+  };
 };
 
 // Get greeting based on SL time
@@ -878,6 +950,37 @@ app.get('/api/greeting', (req, res) => {
   res.json({ greeting });
 });
 
+// Get rate limit status
+app.get('/api/rate-limit/status', (req, res) => {
+  const now = Date.now();
+  const rateLimit = readRateLimit();
+  
+  // Reset if cooldown period has passed
+  if (rateLimit.windowStartTime && (now - rateLimit.windowStartTime) >= RATE_LIMIT_COOLDOWN_MS) {
+    rateLimit.leadsSent = 0;
+    rateLimit.windowStartTime = null;
+    rateLimit.lastBatchTime = null;
+    writeRateLimit(rateLimit);
+  }
+  
+  const availableLeads = RATE_LIMIT_MAX_LEADS - rateLimit.leadsSent;
+  const timeUntilReset = rateLimit.windowStartTime 
+    ? Math.max(0, RATE_LIMIT_COOLDOWN_MS - (now - rateLimit.windowStartTime))
+    : 0;
+  const minutesRemaining = Math.ceil(timeUntilReset / 60000);
+  
+  res.json({
+    maxLeads: RATE_LIMIT_MAX_LEADS,
+    leadsSent: rateLimit.leadsSent,
+    availableLeads,
+    canSend: availableLeads > 0,
+    timeUntilReset,
+    minutesRemaining,
+    windowStartTime: rateLimit.windowStartTime,
+    lastBatchTime: rateLimit.lastBatchTime
+  });
+});
+
 // Send messages to leads
 app.post('/api/whatsapp/send-messages', async (req, res) => {
   if (whatsappStatus !== 'connected' || !whatsappClient) {
@@ -888,6 +991,25 @@ app.post('/api/whatsapp/send-messages', async (req, res) => {
   
   if (!leadIds || !Array.isArray(leadIds) || leadIds.length === 0) {
     return res.status(400).json({ error: 'Lead IDs array is required' });
+  }
+
+  // Enforce maximum 10 leads per request
+  if (leadIds.length > RATE_LIMIT_MAX_LEADS) {
+    return res.status(400).json({ 
+      error: `Maximum ${RATE_LIMIT_MAX_LEADS} leads can be sent at once. You requested ${leadIds.length} leads.` 
+    });
+  }
+
+  // Check rate limit
+  const rateLimitCheck = checkRateLimit(leadIds.length);
+  if (!rateLimitCheck.allowed) {
+    return res.status(429).json({
+      error: 'Rate limit exceeded',
+      message: rateLimitCheck.message,
+      availableLeads: rateLimitCheck.availableLeads,
+      minutesRemaining: rateLimitCheck.minutesRemaining,
+      timeUntilReset: rateLimitCheck.timeUntilReset
+    });
   }
 
   const leads = readLeads();
@@ -1031,6 +1153,14 @@ app.post('/api/whatsapp/send-messages', async (req, res) => {
   writeLeads(leads);
   updateAnalytics();
 
+  // Get updated rate limit status
+  const rateLimit = readRateLimit();
+  const availableLeads = RATE_LIMIT_MAX_LEADS - rateLimit.leadsSent;
+  const timeUntilReset = rateLimit.windowStartTime 
+    ? Math.max(0, RATE_LIMIT_COOLDOWN_MS - (Date.now() - rateLimit.windowStartTime))
+    : 0;
+  const minutesRemaining = Math.ceil(timeUntilReset / 60000);
+
   res.json({
     message: 'Message sending completed',
     results,
@@ -1039,6 +1169,13 @@ app.post('/api/whatsapp/send-messages', async (req, res) => {
       success: results.filter(r => r.status === 'success').length,
       skipped: results.filter(r => r.status === 'skipped').length,
       failed: results.filter(r => r.status === 'error').length
+    },
+    rateLimit: {
+      leadsSent: rateLimit.leadsSent,
+      availableLeads,
+      canSendMore: availableLeads > 0,
+      minutesRemaining,
+      timeUntilReset
     }
   });
 });

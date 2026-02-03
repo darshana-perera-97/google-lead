@@ -32,6 +32,9 @@ export const API_ENDPOINTS = {
   
   // Google Sheets
   GOOGLE_SHEETS_SAVE: `${API_BASE_URL}/google-sheets/save`,
+  
+  // Rate Limit
+  RATE_LIMIT_STATUS: `${API_BASE_URL}/rate-limit/status`,
 };
 
 export default API_ENDPOINTS;
