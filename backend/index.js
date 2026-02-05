@@ -817,84 +817,232 @@ let whatsappClient = null;
 let whatsappQR = null;
 let whatsappStatus = 'disconnected'; // disconnected, connecting, connected
 let whatsappAccountInfo = null;
+let isInitializing = false;
+let initRetryCount = 0;
+const MAX_RETRIES = 5; // Increased retries for browser conflicts
+let initTimeout = null;
 
-const initWhatsApp = () => {
+// Cleanup function to properly destroy WhatsApp client
+const cleanupWhatsApp = async () => {
   if (whatsappClient) {
-    return; // Already initialized
+    try {
+      console.log('Cleaning up WhatsApp client...');
+      await whatsappClient.destroy();
+    } catch (error) {
+      console.error('Error destroying WhatsApp client:', error);
+    } finally {
+      whatsappClient = null;
+      whatsappStatus = 'disconnected';
+      whatsappQR = null;
+      whatsappAccountInfo = null;
+    }
+  }
+};
+
+const initWhatsApp = async () => {
+  // Prevent multiple simultaneous initializations
+  if (isInitializing) {
+    console.log('WhatsApp initialization already in progress...');
+    return;
   }
 
-  whatsappClient = new Client({
-    authStrategy: new LocalAuth({
-      dataPath: path.join(__dirname, 'data', 'whatsapp-session')
-    }),
-    puppeteer: {
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--single-process', // This can help with some sandbox issues
-        '--disable-gpu'
-      ]
-    }
-  });
+  // If client exists and is connected, don't reinitialize
+  if (whatsappClient && whatsappStatus === 'connected') {
+    console.log('WhatsApp client already connected');
+    return;
+  }
 
-  whatsappClient.on('qr', async (qr) => {
-    console.log('QR Code received');
-    whatsappQR = await qrcode.toDataURL(qr);
-    whatsappStatus = 'connecting';
-  });
+  // Clear any pending initialization timeout
+  if (initTimeout) {
+    clearTimeout(initTimeout);
+    initTimeout = null;
+  }
 
-  whatsappClient.on('ready', async () => {
-    console.log('WhatsApp client is ready!');
-    whatsappStatus = 'connected';
-    whatsappQR = null;
+  // Clean up existing client if any
+  if (whatsappClient) {
+    await cleanupWhatsApp();
+    // Wait a bit after cleanup before reinitializing
+    await new Promise(resolve => setTimeout(resolve, 2000));
+  }
+
+  isInitializing = true;
+
+  try {
+    const sessionPath = path.join(__dirname, 'data', 'whatsapp-session');
     
-    // Get account info
-    try {
-      const info = whatsappClient.info;
-      whatsappAccountInfo = {
-        wid: info.wid ? info.wid.user : null,
-        pushname: info.pushname || null,
-        platform: info.platform || null
-      };
-      console.log('WhatsApp account info:', whatsappAccountInfo);
-    } catch (error) {
-      console.error('Error getting account info on ready:', error);
-    }
-  });
-
-  whatsappClient.on('authenticated', () => {
-    console.log('WhatsApp authenticated');
-  });
-
-  whatsappClient.on('auth_failure', (msg) => {
-    console.error('WhatsApp authentication failure:', msg);
-    whatsappStatus = 'disconnected';
-    whatsappQR = null;
-  });
-
-  whatsappClient.on('disconnected', (reason) => {
-    console.log('WhatsApp disconnected:', reason);
-    whatsappStatus = 'disconnected';
-    whatsappQR = null;
-    whatsappAccountInfo = null;
-    // Reinitialize on disconnect
-    setTimeout(() => {
-      if (whatsappStatus === 'disconnected') {
-        initWhatsApp();
+    console.log('Initializing WhatsApp client...');
+    
+    whatsappClient = new Client({
+      authStrategy: new LocalAuth({
+        dataPath: sessionPath
+      }),
+      puppeteer: {
+        headless: true,
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-accelerated-2d-canvas',
+          '--no-first-run',
+          '--no-zygote',
+          '--single-process',
+          '--disable-gpu',
+          '--disable-software-rasterizer',
+          '--disable-background-timer-throttling',
+          '--disable-backgrounding-occluded-windows',
+          '--disable-renderer-backgrounding'
+        ]
       }
-    }, 5000);
-  });
+    });
 
-  whatsappClient.initialize();
+    whatsappClient.on('qr', async (qr) => {
+      console.log('QR Code received');
+      whatsappQR = await qrcode.toDataURL(qr);
+      whatsappStatus = 'connecting';
+      initRetryCount = 0; // Reset retry count on successful QR
+    });
+
+    whatsappClient.on('ready', async () => {
+      console.log('WhatsApp client is ready!');
+      whatsappStatus = 'connected';
+      whatsappQR = null;
+      isInitializing = false;
+      initRetryCount = 0; // Reset retry count on success
+      
+      // Get account info
+      try {
+        const info = whatsappClient.info;
+        whatsappAccountInfo = {
+          wid: info.wid ? info.wid.user : null,
+          pushname: info.pushname || null,
+          platform: info.platform || null
+        };
+        console.log('WhatsApp account info:', whatsappAccountInfo);
+      } catch (error) {
+        console.error('Error getting account info on ready:', error);
+      }
+    });
+
+    whatsappClient.on('authenticated', () => {
+      console.log('WhatsApp authenticated');
+      isInitializing = false;
+    });
+
+    whatsappClient.on('auth_failure', (msg) => {
+      console.error('WhatsApp authentication failure:', msg);
+      whatsappStatus = 'disconnected';
+      whatsappQR = null;
+      isInitializing = false;
+    });
+
+    whatsappClient.on('disconnected', (reason) => {
+      console.log('WhatsApp disconnected:', reason);
+      whatsappStatus = 'disconnected';
+      whatsappQR = null;
+      whatsappAccountInfo = null;
+      isInitializing = false;
+      
+      // Clean up and reinitialize after delay
+      setTimeout(async () => {
+        if (whatsappStatus === 'disconnected') {
+          await cleanupWhatsApp();
+          if (initRetryCount < MAX_RETRIES) {
+            initWhatsApp();
+          } else {
+            console.error('Max retries reached for WhatsApp initialization');
+          }
+        }
+      }, 5000);
+    });
+
+    // Handle initialization errors
+    try {
+      await whatsappClient.initialize();
+    } catch (error) {
+      console.error('Error initializing WhatsApp client:', error);
+      isInitializing = false;
+      
+      // Handle "browser already running" error
+      if (error.message && (error.message.includes('already running') || error.message.includes('userDataDir'))) {
+        console.log('Browser instance conflict detected. Waiting and retrying...');
+        await cleanupWhatsApp();
+        
+        // Wait longer before retrying to allow browser to close
+        const currentRetry = initRetryCount;
+        initRetryCount++;
+        
+        if (currentRetry < MAX_RETRIES) {
+          const waitTime = Math.min(5000 + (5000 * currentRetry), 30000); // Exponential backoff, max 30s
+          console.log(`Waiting ${waitTime/1000} seconds before retry ${currentRetry + 1}/${MAX_RETRIES}...`);
+          initTimeout = setTimeout(() => {
+            initWhatsApp();
+          }, waitTime);
+        } else {
+          console.error('Max retries reached. The browser may still be running from a previous instance.');
+          console.error('Please wait a few minutes or restart PM2 to clear the session.');
+          console.error('You can also try: pm2 restart google-leads');
+          isInitializing = false;
+        }
+      } else {
+        // For other errors, reset and retry
+        await cleanupWhatsApp();
+        const currentRetry = initRetryCount;
+        initRetryCount++;
+        
+        if (currentRetry < MAX_RETRIES) {
+          setTimeout(() => {
+            initWhatsApp();
+          }, 5000);
+        } else {
+          console.error('Max retries reached for WhatsApp initialization');
+          isInitializing = false;
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Error setting up WhatsApp client:', error);
+    isInitializing = false;
+    await cleanupWhatsApp();
+    
+    const currentRetry = initRetryCount;
+    initRetryCount++;
+    
+    if (currentRetry < MAX_RETRIES) {
+      setTimeout(() => {
+        initWhatsApp();
+      }, 5000);
+    } else {
+      console.error('Max retries reached for WhatsApp initialization');
+    }
+  }
 };
 
 // Initialize WhatsApp on server start
 initWhatsApp();
+
+// Handle graceful shutdown
+process.on('SIGTERM', async () => {
+  console.log('SIGTERM received, cleaning up...');
+  await cleanupWhatsApp();
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  console.log('SIGINT received, cleaning up...');
+  await cleanupWhatsApp();
+  process.exit(0);
+});
+
+// Handle uncaught errors
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+process.on('uncaughtException', async (error) => {
+  console.error('Uncaught Exception:', error);
+  await cleanupWhatsApp();
+  process.exit(1);
+});
 
 // Get WhatsApp connection status
 app.get('/api/whatsapp/status', (req, res) => {
@@ -929,14 +1077,17 @@ app.get('/api/whatsapp/account', async (req, res) => {
 app.post('/api/whatsapp/disconnect', async (req, res) => {
   if (whatsappClient) {
     try {
-      await whatsappClient.logout();
-      whatsappStatus = 'disconnected';
-      whatsappQR = null;
-      whatsappAccountInfo = null;
-      whatsappClient = null;
+      // Try to logout first, then cleanup
+      try {
+        await whatsappClient.logout();
+      } catch (logoutError) {
+        console.log('Logout error (may already be logged out):', logoutError.message);
+      }
+      await cleanupWhatsApp();
       res.json({ message: 'WhatsApp disconnected successfully' });
     } catch (error) {
       console.error('Error disconnecting WhatsApp:', error);
+      await cleanupWhatsApp(); // Ensure cleanup even on error
       res.status(500).json({ error: 'Failed to disconnect' });
     }
   } else {
