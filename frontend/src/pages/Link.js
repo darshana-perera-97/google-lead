@@ -19,11 +19,27 @@ function Link() {
       const response = await fetch(API_ENDPOINTS.WHATSAPP_STATUS);
       if (response.ok) {
         const data = await response.json();
-        setStatus(data.status);
-        setQrCode(data.qr);
+        console.log('WhatsApp status:', data.status, 'QR exists:', !!data.qr, 'QR length:', data.qr ? data.qr.length : 0);
+        
+        // Update status
+        if (data.status) {
+          setStatus(data.status);
+        }
+        
+        // Update QR code - keep existing QR if new one is null/undefined (to prevent flickering)
+        if (data.qr) {
+          console.log('Setting QR code, length:', data.qr.length);
+          setQrCode(data.qr);
+        } else if (data.qr === null) {
+          // Only clear QR if explicitly null (not undefined)
+          setQrCode(null);
+        }
+        
         if (data.status === 'connected') {
           fetchAccountInfo();
         }
+      } else {
+        console.error('Failed to fetch WhatsApp status:', response.status, response.statusText);
       }
     } catch (error) {
       console.error('Error fetching WhatsApp status:', error);
@@ -70,7 +86,7 @@ function Link() {
     <div className="container mt-4">
       <h2 className="mb-4" style={{ fontWeight: '600', color: '#1e293b' }}>WhatsApp Connection</h2>
 
-      {status === 'disconnected' && (
+      {!qrCode && status === 'disconnected' && (
         <div className="card">
           <div className="card-body text-center">
             <h5 className="card-title mb-3">WhatsApp Not Connected</h5>
@@ -82,23 +98,36 @@ function Link() {
         </div>
       )}
 
-      {status === 'connecting' && qrCode && (
+      {qrCode && status !== 'connected' && (
         <div className="card">
           <div className="card-body text-center">
             <h5 className="card-title mb-3">Scan QR Code to Connect</h5>
             <p className="text-muted mb-3">
               Open WhatsApp on your phone and scan this QR code
             </p>
-            <div className="d-flex justify-content-center">
-              <img 
-                src={qrCode} 
-                alt="WhatsApp QR Code" 
-                className="img-fluid"
-                style={{ maxWidth: '100%', width: '300px', height: 'auto' }}
-              />
+            <div className="d-flex justify-content-center mb-3">
+              {qrCode ? (
+                <img 
+                  src={qrCode} 
+                  alt="WhatsApp QR Code" 
+                  className="img-fluid"
+                  style={{ maxWidth: '100%', width: '300px', height: 'auto', border: '1px solid #ddd', borderRadius: '8px', padding: '10px', backgroundColor: '#fff' }}
+                  onError={(e) => {
+                    console.error('Error loading QR code image');
+                    e.target.style.display = 'none';
+                  }}
+                  onLoad={() => {
+                    console.log('QR code image loaded successfully');
+                  }}
+                />
+              ) : (
+                <div className="spinner-border text-primary" role="status">
+                  <span className="visually-hidden">Loading QR code...</span>
+                </div>
+              )}
             </div>
             <p className="text-muted mt-3 small">
-              Status: Connecting...
+              Status: {status === 'connecting' ? 'Connecting...' : status === 'disconnected' ? 'Waiting for connection...' : status}
             </p>
           </div>
         </div>

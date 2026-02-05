@@ -1047,9 +1047,15 @@ const initWhatsApp = async () => {
 
     whatsappClient.on('qr', async (qr) => {
       console.log('QR Code received');
-      whatsappQR = await qrcode.toDataURL(qr);
-      whatsappStatus = 'connecting';
-      initRetryCount = 0; // Reset retry count on successful QR
+      try {
+        whatsappQR = await qrcode.toDataURL(qr);
+        whatsappStatus = 'connecting';
+        console.log('QR Code generated successfully, status set to connecting. QR length:', whatsappQR ? whatsappQR.length : 0);
+        initRetryCount = 0; // Reset retry count on successful QR
+      } catch (error) {
+        console.error('Error generating QR code:', error);
+        whatsappQR = null;
+      }
     });
 
     whatsappClient.on('ready', async () => {
@@ -1202,11 +1208,13 @@ process.on('uncaughtException', async (error) => {
 
 // Get WhatsApp connection status
 app.get('/api/whatsapp/status', (req, res) => {
-  res.json({
+  const response = {
     status: whatsappStatus,
     qr: whatsappQR,
     accountInfo: whatsappAccountInfo
-  });
+  };
+  console.log('WhatsApp status requested - Status:', whatsappStatus, 'QR exists:', !!whatsappQR, 'QR length:', whatsappQR ? whatsappQR.length : 0);
+  res.json(response);
 });
 
 // Get WhatsApp account info
