@@ -936,6 +936,7 @@ function Home() {
                         className="form-check-input"
                       />
                     </th>
+                    <th style={{ width: '60px' }}>#</th>
                     <th>Title</th>
                     <th>Contact Number</th>
                     <th>Link</th>
@@ -952,6 +953,9 @@ function Home() {
                           className="form-check-input"
                           disabled={selectedItems.size >= 10 && !selectedItems.has(index)}
                         />
+                      </td>
+                      <td>
+                        <span className="text-muted fw-bold">{index + 1}</span>
                       </td>
                       <td>
                         <a
