@@ -3,10 +3,14 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
+const { exec, spawn } = require('child_process');
+const { promisify } = require('util');
 const axios = require('axios');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
 const { google } = require('googleapis');
+
+const execAsync = promisify(exec);
 const app = express();
 const PORT = process.env.PORT || 3060;
 
@@ -822,12 +826,154 @@ let initRetryCount = 0;
 const MAX_RETRIES = 5; // Increased retries for browser conflicts
 let initTimeout = null;
 
+// Function to kill Chrome/Chromium processes using the session directory
+const killBrowserProcesses = async (sessionPath) => {
+  try {
+    const normalizedPath = path.resolve(sessionPath);
+    console.log(`Attempting to kill browser processes using session: ${normalizedPath}`);
+    
+    // Try different methods based on OS
+    if (process.platform === 'linux') {
+      // Method 1: Find Chrome/Chromium processes that might be using this session
+      // Look for processes with the session path in their command line
+      try {
+        // Escape special characters in path for grep
+        const escapedPath = normalizedPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        
+        // Find PIDs of Chrome/Chromium processes containing the session path
+        const { stdout } = await execAsync(`ps aux | grep -E "[c]hrome|[c]hromium" | grep "${escapedPath}" | awk '{print $2}'`);
+        const pids = stdout.trim().split('\n').filter(pid => pid && pid.trim());
+        
+        if (pids.length > 0) {
+          console.log(`Found ${pids.length} browser process(es) to kill: ${pids.join(', ')}`);
+          for (const pid of pids) {
+            try {
+              await execAsync(`kill -9 ${pid.trim()} 2>/dev/null || true`);
+              console.log(`Killed process ${pid.trim()}`);
+            } catch (killError) {
+              console.log(`Process ${pid.trim()} may have already terminated`);
+            }
+          }
+        } else {
+          console.log('No browser processes found with session path in command line');
+        }
+      } catch (error) {
+        // If grep finds nothing (exit code 1), that's okay
+        if (error.code !== 1) {
+          console.log('Error finding browser processes by path:', error.message);
+        }
+      }
+      
+      // Method 2: Find all Chrome/Chromium processes and check their working directory or command
+      // This is more aggressive but necessary if the path isn't in the command line
+      try {
+        // Get all Chrome/Chromium PIDs
+        const { stdout: allChrome } = await execAsync(`pgrep -f "[c]hrome|[c]hromium" || true`);
+        const allPids = allChrome.trim().split('\n').filter(pid => pid && pid.trim());
+        
+        if (allPids.length > 0) {
+          console.log(`Found ${allPids.length} total Chrome/Chromium process(es), checking for session usage...`);
+          
+          for (const pid of allPids) {
+            try {
+              // Check if this process is using the session directory
+              const { stdout: procInfo } = await execAsync(`lsof -p ${pid.trim()} 2>/dev/null | grep "${normalizedPath}" || true`);
+              if (procInfo.trim()) {
+                console.log(`Process ${pid.trim()} is using session directory, killing...`);
+                await execAsync(`kill -9 ${pid.trim()} 2>/dev/null || true`);
+              }
+            } catch (e) {
+              // Process may not exist or lsof may not be available, continue
+            }
+          }
+        }
+      } catch (error) {
+        // Ignore errors - pgrep returns exit code 1 if no processes found
+        if (error.code !== 1) {
+          console.log('Error in secondary browser process check:', error.message);
+        }
+      }
+      
+      // Method 3: Kill all Chrome/Chromium processes as last resort (very aggressive)
+      // Only use this if we're still having issues
+      try {
+        const { stdout: remainingChrome } = await execAsync(`pgrep -f "[c]hrome.*headless|[c]hromium.*headless" || true`);
+        const remainingPids = remainingChrome.trim().split('\n').filter(pid => pid && pid.trim());
+        if (remainingPids.length > 0) {
+          console.log(`Killing ${remainingPids.length} remaining headless browser process(es)...`);
+          for (const pid of remainingPids) {
+            try {
+              await execAsync(`kill -9 ${pid.trim()} 2>/dev/null || true`);
+            } catch (e) {
+              // Ignore
+            }
+          }
+        }
+      } catch (error) {
+        // Ignore
+      }
+    } else if (process.platform === 'win32') {
+      // Windows: Use taskkill
+      try {
+        await execAsync(`taskkill /F /IM chrome.exe /T 2>nul || taskkill /F /IM chromium.exe /T 2>nul || true`);
+      } catch (error) {
+        // Ignore errors
+      }
+    }
+    
+    // Wait a moment for processes to terminate
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    // Verify processes are killed (on Linux)
+    if (process.platform === 'linux') {
+      try {
+        const escapedPath = normalizedPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const { stdout: remaining } = await execAsync(`ps aux | grep -E "[c]hrome|[c]hromium" | grep "${escapedPath}" | awk '{print $2}' || true`);
+        const remainingPids = remaining.trim().split('\n').filter(pid => pid && pid.trim());
+        if (remainingPids.length > 0) {
+          console.log(`Warning: ${remainingPids.length} browser process(es) still running: ${remainingPids.join(', ')}`);
+          // Try one more aggressive kill
+          for (const pid of remainingPids) {
+            try {
+              await execAsync(`kill -9 ${pid.trim()} 2>/dev/null || true`);
+            } catch (e) {
+              // Ignore
+            }
+          }
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        } else {
+          console.log('All browser processes successfully terminated');
+        }
+      } catch (error) {
+        // Ignore verification errors
+      }
+    }
+    
+    console.log('Browser process cleanup completed');
+  } catch (error) {
+    console.log('Error killing browser processes:', error.message);
+  }
+};
+
 // Cleanup function to properly destroy WhatsApp client
 const cleanupWhatsApp = async () => {
   if (whatsappClient) {
     try {
       console.log('Cleaning up WhatsApp client...');
-      await whatsappClient.destroy();
+      
+      // Get the session path before destroying
+      const sessionPath = path.join(__dirname, 'data', 'whatsapp-session');
+      
+      // Try to destroy the client first
+      try {
+        await whatsappClient.destroy();
+      } catch (destroyError) {
+        console.log('Error during client destroy, attempting to kill browser processes...');
+      }
+      
+      // Kill any remaining browser processes
+      await killBrowserProcesses(sessionPath);
+      
     } catch (error) {
       console.error('Error destroying WhatsApp client:', error);
     } finally {
@@ -836,6 +982,10 @@ const cleanupWhatsApp = async () => {
       whatsappQR = null;
       whatsappAccountInfo = null;
     }
+  } else {
+    // Even if client is null, try to kill browser processes if they exist
+    const sessionPath = path.join(__dirname, 'data', 'whatsapp-session');
+    await killBrowserProcesses(sessionPath);
   }
 };
 
@@ -964,7 +1114,13 @@ const initWhatsApp = async () => {
       
       // Handle "browser already running" error
       if (error.message && (error.message.includes('already running') || error.message.includes('userDataDir'))) {
-        console.log('Browser instance conflict detected. Waiting and retrying...');
+        console.log('Browser instance conflict detected. Killing browser processes and retrying...');
+        
+        // Kill browser processes before cleanup
+        const sessionPath = path.join(__dirname, 'data', 'whatsapp-session');
+        await killBrowserProcesses(sessionPath);
+        
+        // Then cleanup the client
         await cleanupWhatsApp();
         
         // Wait longer before retrying to allow browser to close
