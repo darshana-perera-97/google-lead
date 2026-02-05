@@ -110,6 +110,17 @@ function Home() {
           setSearchResults(data.results);
           setSearchText(data.search || '');
           setCategory(data.category || '');
+          // Restore selected items if they exist
+          if (data.selectedItems && Array.isArray(data.selectedItems) && data.selectedItems.length > 0) {
+            // Convert array to Set and filter valid indices
+            const validIndices = data.selectedItems.filter(idx => 
+              typeof idx === 'number' && idx >= 0 && idx < data.results.organic.length
+            );
+            if (validIndices.length > 0) {
+              setSelectedItems(new Set(validIndices));
+              setSelectAll(validIndices.length === data.results.organic.length);
+            }
+          }
           // Extract leads from last search results
           extractLeads(data.results, data.search || '');
         }
@@ -190,8 +201,11 @@ function Home() {
         // Extract leads from results
         extractLeads(data.results, searchText);
         // Reset selections when new search is performed
-        setSelectedItems(new Set());
+        const newSelected = new Set();
+        setSelectedItems(newSelected);
         setSelectAll(false);
+        // Clear selections in backend
+        saveSelectedItemsToBackend(newSelected);
       } else {
         const error = await response.json();
         alert(error.error || 'Error performing search');
@@ -277,6 +291,23 @@ function Home() {
     setExtractedLeads(leads);
   };
 
+  // Save selected items to backend
+  const saveSelectedItemsToBackend = async (selectedSet) => {
+    try {
+      const selectedArray = Array.from(selectedSet);
+      await fetch(API_ENDPOINTS.LAST_SEARCH_SELECTED_ITEMS, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ selectedItems: selectedArray }),
+      });
+    } catch (error) {
+      console.error('Error saving selected items:', error);
+      // Don't show error to user, it's not critical
+    }
+  };
+
   // Handle individual checkbox selection
   const handleItemSelect = (index) => {
     const newSelected = new Set(selectedItems);
@@ -291,6 +322,8 @@ function Home() {
       newSelected.add(index);
     }
     setSelectedItems(newSelected);
+    // Save to backend
+    saveSelectedItemsToBackend(newSelected);
     // Update selectAll state based on whether all items are selected
     if (searchResults && searchResults.organic) {
       setSelectAll(newSelected.size === searchResults.organic.length && searchResults.organic.length > 0);
@@ -300,14 +333,19 @@ function Home() {
   // Handle select all
   const handleSelectAll = () => {
     if (selectAll) {
-      setSelectedItems(new Set());
+      const newSelected = new Set();
+      setSelectedItems(newSelected);
       setSelectAll(false);
+      // Save to backend
+      saveSelectedItemsToBackend(newSelected);
     } else {
       // Limit to 10 leads max
       const maxSelectable = Math.min(10, searchResults.organic.length);
       const selectedIndices = new Set(Array.from({ length: maxSelectable }, (_, i) => i));
       setSelectedItems(selectedIndices);
       setSelectAll(maxSelectable === searchResults.organic.length);
+      // Save to backend
+      saveSelectedItemsToBackend(selectedIndices);
       if (searchResults.organic.length > 10) {
         alert('Maximum 10 leads can be selected at once. Only the first 10 leads were selected.');
       }
@@ -453,14 +491,27 @@ function Home() {
 
     // Check rate limit before proceeding
     await fetchRateLimitStatus();
-    const currentRateLimit = await fetch(API_ENDPOINTS.RATE_LIMIT_STATUS).then(r => r.json()).catch(() => rateLimit);
+    let currentRateLimit = rateLimit;
+    try {
+      const response = await fetch(API_ENDPOINTS.RATE_LIMIT_STATUS);
+      if (response.ok) {
+        currentRateLimit = await response.json();
+      }
+    } catch (error) {
+      console.error('Error fetching rate limit status:', error);
+      // Use existing rateLimit state as fallback
+    }
+    
+    const availableLeads = currentRateLimit.availableLeads ?? 0;
+    const minutesRemaining = currentRateLimit.minutesRemaining ?? 0;
+    
     if (!currentRateLimit.canSend) {
-      alert(`Rate limit reached. You can send ${currentRateLimit.availableLeads} more lead(s). Next batch available in ${currentRateLimit.minutesRemaining} minute(s).`);
+      alert(`Rate limit reached. You can send ${availableLeads} more lead(s). Next batch available in ${minutesRemaining} minute(s).`);
       return;
     }
     
-    if (selectedItems.size > currentRateLimit.availableLeads) {
-      alert(`You can only send ${currentRateLimit.availableLeads} more lead(s) right now. Please select fewer leads or wait ${currentRateLimit.minutesRemaining} minute(s) for the next batch.`);
+    if (selectedItems.size > availableLeads) {
+      alert(`You can only send ${availableLeads} more lead(s) right now. Please select fewer leads or wait ${minutesRemaining} minute(s) for the next batch.`);
       return;
     }
 
@@ -572,10 +623,12 @@ function Home() {
           message += `\n✗ ${failedCount} failed`;
         }
         if (sendData.rateLimit) {
+          const rateLimitAvailable = sendData.rateLimit.availableLeads ?? 0;
+          const rateLimitMinutes = sendData.rateLimit.minutesRemaining ?? 0;
           if (sendData.rateLimit.canSendMore) {
-            message += `\n\nYou can send ${sendData.rateLimit.availableLeads} more lead(s) now.`;
+            message += `\n\nYou can send ${rateLimitAvailable} more lead(s) now.`;
           } else {
-            message += `\n\nRate limit reached. Next batch of 10 leads available in ${sendData.rateLimit.minutesRemaining} minute(s).`;
+            message += `\n\nRate limit reached. Next batch of 10 leads available in ${rateLimitMinutes} minute(s).`;
           }
         }
         alert(message);
@@ -583,7 +636,9 @@ function Home() {
       } else {
         const sendError = await sendResponse.json();
         if (sendError.error === 'Rate limit exceeded') {
-          alert(`${sendError.message}\n\nAvailable: ${sendError.availableLeads} lead(s)\nWait time: ${sendError.minutesRemaining} minute(s)`);
+          const errorAvailableLeads = sendError.availableLeads ?? 0;
+          const errorMinutesRemaining = sendError.minutesRemaining ?? 0;
+          alert(`${sendError.message || 'Rate limit exceeded'}\n\nAvailable: ${errorAvailableLeads} lead(s)\nWait time: ${errorMinutesRemaining} minute(s)`);
           fetchRateLimitStatus(); // Refresh rate limit status
         } else {
           alert(`Leads saved successfully, but error sending messages: ${sendError.error || 'Failed to send messages'}`);
@@ -666,45 +721,16 @@ function Home() {
       if (response.ok) {
         const data = await response.json();
         
-        // Get the leadIds of the saved leads
-        const savedLeadIds = data.savedLeadIds || [];
-        
-        if (savedLeadIds.length > 0) {
-          // Automatically send messages to the newly saved leads
-          try {
-            const sendResponse = await fetch(API_ENDPOINTS.WHATSAPP_SEND_MESSAGES, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({ leadIds: savedLeadIds }),
-            });
-
-            if (sendResponse.ok) {
-              const sendData = await sendResponse.json();
-              const successCount = sendData.summary.success || 0;
-              const skippedCount = sendData.summary.skipped || 0;
-              const failedCount = sendData.summary.failed || 0;
-              
-              let message = `Successfully saved ${data.count} leads! Total leads: ${data.totalLeads}\n\n`;
-              message += `Messages sent: ${successCount} successful`;
-              if (skippedCount > 0) {
-                message += `, ${skippedCount} already sent`;
-              }
-              if (failedCount > 0) {
-                message += `, ${failedCount} failed`;
-              }
-              alert(message);
-            } else {
-              const sendError = await sendResponse.json();
-              alert(`Successfully saved ${data.count} leads! Total leads: ${data.totalLeads}\n\nError sending messages: ${sendError.error || 'Failed to send messages'}`);
-            }
-          } catch (sendError) {
-            console.error('Error sending messages:', sendError);
-            alert(`Successfully saved ${data.count} leads! Total leads: ${data.totalLeads}\n\nError sending messages. Please try sending manually from Leads page.`);
+        if (data.count > 0) {
+          let message = `Successfully saved ${data.count} lead(s)!`;
+          if (data.count < selectedLeads.length) {
+            message += `\nNote: ${selectedLeads.length - data.count} lead(s) were skipped (may already exist or missing contact numbers).`;
           }
+          message += `\n\nTotal leads: ${data.totalLeads}`;
+          message += `\n\nYou can send messages to these leads from the Leads page.`;
+          alert(message);
         } else {
-          alert(`Successfully saved ${data.count} leads! Total leads: ${data.totalLeads}`);
+          alert('No new leads were saved. They may already exist in your leads list.');
         }
         
         // Update total leads count
@@ -714,8 +740,11 @@ function Home() {
           setReachedLeads(data.analytics.reachedLeads || 0);
         }
         // Clear selections after saving
-        setSelectedItems(new Set());
+        const newSelected = new Set();
+        setSelectedItems(newSelected);
         setSelectAll(false);
+        // Clear selections in backend
+        saveSelectedItemsToBackend(newSelected);
       } else {
         const error = await response.json();
         alert(error.error || 'Error saving leads');
@@ -854,8 +883,8 @@ function Home() {
               <div>
                 <h5 className="card-title mb-0">Search Results - {searchResults.organic.length} results</h5>
                 <small className={`${rateLimit.canSend ? 'text-success' : 'text-warning'}`}>
-                  Rate Limit: {rateLimit.leadsSent}/{rateLimit.maxLeads} sent
-                  {!rateLimit.canSend && ` • Next batch in ${rateLimit.minutesRemaining} min`}
+                  Rate Limit: {rateLimit.leadsSent ?? 0}/{rateLimit.maxLeads ?? 10} sent
+                  {!rateLimit.canSend && ` • Next batch in ${rateLimit.minutesRemaining ?? 0} min`}
                 </small>
               </div>
               <div className="d-flex gap-2">
@@ -887,7 +916,7 @@ function Home() {
                       className="btn btn-primary"
                       onClick={handleSendMessagesToSelected}
                       disabled={savingLeads || sendingMessages || !rateLimit.canSend || selectedItems.size > rateLimit.availableLeads}
-                      title={!rateLimit.canSend ? `Rate limit reached. Wait ${rateLimit.minutesRemaining} minute(s).` : ''}
+                      title={!rateLimit.canSend ? `Rate limit reached. Wait ${rateLimit.minutesRemaining ?? 0} minute(s).` : ''}
                     >
                       {sendingMessages ? 'Sending...' : `Send Messages (${selectedItems.size})`}
                     </button>

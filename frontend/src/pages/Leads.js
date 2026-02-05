@@ -123,14 +123,19 @@ function Leads() {
       return;
     }
 
-    // Check rate limit before sending
+    // Check rate limit before sending - refresh status first
+    await fetchRateLimitStatus();
+    
+    const availableLeads = rateLimit.availableLeads ?? 0;
+    const minutesRemaining = rateLimit.minutesRemaining ?? 0;
+    
     if (!rateLimit.canSend) {
-      alert(`Rate limit reached. You can send ${rateLimit.availableLeads} more lead(s). Next batch available in ${rateLimit.minutesRemaining} minute(s).`);
+      alert(`Rate limit reached. You can send ${availableLeads} more lead(s). Next batch available in ${minutesRemaining} minute(s).`);
       return;
     }
 
-    if (selectedLeads.length > rateLimit.availableLeads) {
-      alert(`You can only send ${rateLimit.availableLeads} more lead(s) right now. Please select fewer leads or wait ${rateLimit.minutesRemaining} minute(s) for the next batch.`);
+    if (selectedLeads.length > availableLeads) {
+      alert(`You can only send ${availableLeads} more lead(s) right now. Please select fewer leads or wait ${minutesRemaining} minute(s) for the next batch.`);
       return;
     }
 
@@ -152,10 +157,12 @@ function Leads() {
         const data = await response.json();
         let message = `Messages sent: ${data.summary.success} successful, ${data.summary.failed} failed`;
         if (data.rateLimit) {
+          const rateLimitAvailable = data.rateLimit.availableLeads ?? 0;
+          const rateLimitMinutes = data.rateLimit.minutesRemaining ?? 0;
           if (data.rateLimit.canSendMore) {
-            message += `\n\nYou can send ${data.rateLimit.availableLeads} more lead(s) now.`;
+            message += `\n\nYou can send ${rateLimitAvailable} more lead(s) now.`;
           } else {
-            message += `\n\nRate limit reached. Next batch of 10 leads available in ${data.rateLimit.minutesRemaining} minute(s).`;
+            message += `\n\nRate limit reached. Next batch of 10 leads available in ${rateLimitMinutes} minute(s).`;
           }
         }
         alert(message);
@@ -165,7 +172,9 @@ function Leads() {
       } else {
         const error = await response.json();
         if (error.error === 'Rate limit exceeded') {
-          alert(`${error.message}\n\nAvailable: ${error.availableLeads} lead(s)\nWait time: ${error.minutesRemaining} minute(s)`);
+          const errorAvailableLeads = error.availableLeads ?? 0;
+          const errorMinutesRemaining = error.minutesRemaining ?? 0;
+          alert(`${error.message || 'Rate limit exceeded'}\n\nAvailable: ${errorAvailableLeads} lead(s)\nWait time: ${errorMinutesRemaining} minute(s)`);
           fetchRateLimitStatus(); // Refresh rate limit status
         } else {
           alert(`Error: ${error.error || 'Failed to send messages'}`);
@@ -187,8 +196,8 @@ function Leads() {
           <div className="d-flex flex-column align-items-center align-items-md-start">
             <span className="text-muted text-center text-md-start">Total: {leads.length} leads</span>
             <small className={`text-center text-md-start ${rateLimit.canSend ? 'text-success' : 'text-warning'}`}>
-              Rate Limit: {rateLimit.leadsSent}/{rateLimit.maxLeads} sent
-              {!rateLimit.canSend && ` • Next batch in ${rateLimit.minutesRemaining} min`}
+              Rate Limit: {rateLimit.leadsSent ?? 0}/{rateLimit.maxLeads ?? 10} sent
+              {!rateLimit.canSend && ` • Next batch in ${rateLimit.minutesRemaining ?? 0} min`}
             </small>
           </div>
           {selectedLeads.length > 0 && (
@@ -196,7 +205,7 @@ function Leads() {
               className="btn btn-success"
               onClick={handleSendMessages}
               disabled={sending || !rateLimit.canSend || selectedLeads.length > rateLimit.availableLeads}
-              title={!rateLimit.canSend ? `Rate limit reached. Wait ${rateLimit.minutesRemaining} minute(s).` : ''}
+              title={!rateLimit.canSend ? `Rate limit reached. Wait ${rateLimit.minutesRemaining ?? 0} minute(s).` : ''}
             >
               {sending ? 'Sending...' : `Send Messages (${selectedLeads.length})`}
             </button>

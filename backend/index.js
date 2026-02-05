@@ -117,7 +117,8 @@ const readLastSearchResults = () => {
       search: "",
       category: "",
       results: null,
-      timestamp: ""
+      timestamp: "",
+      selectedItems: []
     };
   }
 };
@@ -571,11 +572,16 @@ app.post('/api/search', async (req, res) => {
     console.log(`Filtered results: ${filteredResults.organic.length} results (removed ${allResults.organic.length - filteredResults.organic.length} already saved leads)`);
     
     // Save last search results (filtered)
+    // Clear selected items for new search (only preserve if it's the same search)
+    const existingData = readLastSearchResults();
+    const isSameSearch = existingData.search === search.trim() && existingData.category === (category || '');
+    
     const lastSearchData = {
       search: search.trim(),
       category: category || '',
       results: filteredResults,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      selectedItems: isSameSearch ? (existingData.selectedItems || []) : [] // Only preserve if same search
     };
     writeLastSearchResults(lastSearchData);
     
@@ -672,6 +678,29 @@ app.get('/api/analytics', (req, res) => {
 app.get('/api/last-search', (req, res) => {
   const lastSearch = readLastSearchResults();
   res.json(lastSearch);
+});
+
+// Update selected items for last search results
+app.post('/api/last-search/selected-items', (req, res) => {
+  try {
+    const { selectedItems } = req.body;
+    
+    if (!Array.isArray(selectedItems)) {
+      return res.status(400).json({ error: 'selectedItems must be an array' });
+    }
+    
+    const lastSearch = readLastSearchResults();
+    lastSearch.selectedItems = selectedItems;
+    writeLastSearchResults(lastSearch);
+    
+    res.json({ 
+      message: 'Selected items updated successfully',
+      selectedItems: lastSearch.selectedItems
+    });
+  } catch (error) {
+    console.error('Error updating selected items:', error);
+    res.status(500).json({ error: 'Failed to update selected items' });
+  }
 });
 
 // Get all messages
