@@ -1051,6 +1051,24 @@ const initWhatsApp = async () => {
         whatsappQR = await qrcode.toDataURL(qr);
         whatsappStatus = 'connecting';
         console.log('QR Code generated successfully, status set to connecting. QR length:', whatsappQR ? whatsappQR.length : 0);
+        
+        // Display QR code in terminal
+        try {
+          const qrTerminal = await qrcode.toString(qr, { 
+            type: 'terminal',
+            small: true,
+            errorCorrectionLevel: 'M'
+          });
+          console.log('\n' + '='.repeat(60));
+          console.log('WHATSAPP QR CODE - Scan with your phone:');
+          console.log('='.repeat(60));
+          console.log(qrTerminal);
+          console.log('='.repeat(60));
+          console.log('QR Code is also available in the frontend at the Link page.\n');
+        } catch (terminalError) {
+          console.log('Could not display QR code in terminal (non-critical):', terminalError.message);
+        }
+        
         initRetryCount = 0; // Reset retry count on successful QR
       } catch (error) {
         console.error('Error generating QR code:', error);
