@@ -308,17 +308,12 @@ function Home() {
     }
   };
 
-  // Handle individual checkbox selection
+  // Handle individual checkbox selection - no limit, will be batched automatically
   const handleItemSelect = (index) => {
     const newSelected = new Set(selectedItems);
     if (newSelected.has(index)) {
       newSelected.delete(index);
     } else {
-      // Limit to 10 leads max
-      if (newSelected.size >= 10) {
-        alert('Maximum 10 leads can be selected at once. Please deselect some leads first.');
-        return;
-      }
       newSelected.add(index);
     }
     setSelectedItems(newSelected);
@@ -330,7 +325,7 @@ function Home() {
     }
   };
 
-  // Handle select all
+  // Handle select all - no limit, will be batched automatically
   const handleSelectAll = () => {
     if (selectAll) {
       const newSelected = new Set();
@@ -339,16 +334,12 @@ function Home() {
       // Save to backend
       saveSelectedItemsToBackend(newSelected);
     } else {
-      // Limit to 10 leads max
-      const maxSelectable = Math.min(10, searchResults.organic.length);
-      const selectedIndices = new Set(Array.from({ length: maxSelectable }, (_, i) => i));
-      setSelectedItems(selectedIndices);
-      setSelectAll(maxSelectable === searchResults.organic.length);
+      // Select all items
+      const allIndices = new Set(searchResults.organic.map((_, index) => index));
+      setSelectedItems(allIndices);
+      setSelectAll(true);
       // Save to backend
-      saveSelectedItemsToBackend(selectedIndices);
-      if (searchResults.organic.length > 10) {
-        alert('Maximum 10 leads can be selected at once. Only the first 10 leads were selected.');
-      }
+      saveSelectedItemsToBackend(allIndices);
     }
   };
 
@@ -959,7 +950,7 @@ function Home() {
                           checked={selectedItems.has(index)}
                           onChange={() => handleItemSelect(index)}
                           className="form-check-input"
-                          disabled={selectedItems.size >= 10 && !selectedItems.has(index)}
+                          disabled={false}
                         />
                       </td>
                       <td>

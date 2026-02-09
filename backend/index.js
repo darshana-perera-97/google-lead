@@ -1050,35 +1050,35 @@ const initWhatsApp = async () => {
     const sessionPath = path.join(__dirname, 'data', 'whatsapp-session');
     
     console.log('Initializing WhatsApp client...');
-    
-    whatsappClient = new Client({
-      authStrategy: new LocalAuth({
+
+  whatsappClient = new Client({
+    authStrategy: new LocalAuth({
         dataPath: sessionPath
-      }),
-      puppeteer: {
-        headless: true,
-        args: [
-          '--no-sandbox',
-          '--disable-setuid-sandbox',
-          '--disable-dev-shm-usage',
-          '--disable-accelerated-2d-canvas',
-          '--no-first-run',
-          '--no-zygote',
+    }),
+    puppeteer: {
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--no-first-run',
+        '--no-zygote',
           '--single-process',
           '--disable-gpu',
           '--disable-software-rasterizer',
           '--disable-background-timer-throttling',
           '--disable-backgrounding-occluded-windows',
           '--disable-renderer-backgrounding'
-        ]
-      }
-    });
+      ]
+    }
+  });
 
-    whatsappClient.on('qr', async (qr) => {
-      console.log('QR Code received');
+  whatsappClient.on('qr', async (qr) => {
+    console.log('QR Code received');
       try {
-        whatsappQR = await qrcode.toDataURL(qr);
-        whatsappStatus = 'connecting';
+    whatsappQR = await qrcode.toDataURL(qr);
+    whatsappStatus = 'connecting';
         console.log('QR Code generated successfully, status set to connecting. QR length:', whatsappQR ? whatsappQR.length : 0);
         
         // Display QR code in terminal
@@ -1103,60 +1103,60 @@ const initWhatsApp = async () => {
         console.error('Error generating QR code:', error);
         whatsappQR = null;
       }
-    });
+  });
 
-    whatsappClient.on('ready', async () => {
-      console.log('WhatsApp client is ready!');
-      whatsappStatus = 'connected';
-      whatsappQR = null;
+  whatsappClient.on('ready', async () => {
+    console.log('WhatsApp client is ready!');
+    whatsappStatus = 'connected';
+    whatsappQR = null;
       isInitializing = false;
       initRetryCount = 0; // Reset retry count on success
-      
-      // Get account info
-      try {
-        const info = whatsappClient.info;
-        whatsappAccountInfo = {
-          wid: info.wid ? info.wid.user : null,
-          pushname: info.pushname || null,
-          platform: info.platform || null
-        };
-        console.log('WhatsApp account info:', whatsappAccountInfo);
-      } catch (error) {
-        console.error('Error getting account info on ready:', error);
-      }
-    });
+    
+    // Get account info
+    try {
+      const info = whatsappClient.info;
+      whatsappAccountInfo = {
+        wid: info.wid ? info.wid.user : null,
+        pushname: info.pushname || null,
+        platform: info.platform || null
+      };
+      console.log('WhatsApp account info:', whatsappAccountInfo);
+    } catch (error) {
+      console.error('Error getting account info on ready:', error);
+    }
+  });
 
-    whatsappClient.on('authenticated', () => {
-      console.log('WhatsApp authenticated');
+  whatsappClient.on('authenticated', () => {
+    console.log('WhatsApp authenticated');
       isInitializing = false;
-    });
+  });
 
-    whatsappClient.on('auth_failure', (msg) => {
-      console.error('WhatsApp authentication failure:', msg);
-      whatsappStatus = 'disconnected';
-      whatsappQR = null;
+  whatsappClient.on('auth_failure', (msg) => {
+    console.error('WhatsApp authentication failure:', msg);
+    whatsappStatus = 'disconnected';
+    whatsappQR = null;
       isInitializing = false;
-    });
+  });
 
-    whatsappClient.on('disconnected', (reason) => {
-      console.log('WhatsApp disconnected:', reason);
-      whatsappStatus = 'disconnected';
-      whatsappQR = null;
-      whatsappAccountInfo = null;
+  whatsappClient.on('disconnected', (reason) => {
+    console.log('WhatsApp disconnected:', reason);
+    whatsappStatus = 'disconnected';
+    whatsappQR = null;
+    whatsappAccountInfo = null;
       isInitializing = false;
       
       // Clean up and reinitialize after delay
       setTimeout(async () => {
-        if (whatsappStatus === 'disconnected') {
+      if (whatsappStatus === 'disconnected') {
           await cleanupWhatsApp();
           if (initRetryCount < MAX_RETRIES) {
-            initWhatsApp();
+        initWhatsApp();
           } else {
             console.error('Max retries reached for WhatsApp initialization');
           }
-        }
-      }, 5000);
-    });
+      }
+    }, 5000);
+  });
 
     // Handle initialization errors
     try {
@@ -1289,8 +1289,8 @@ app.post('/api/whatsapp/disconnect', async (req, res) => {
   if (whatsappClient) {
     try {
       // Try to logout first, then cleanup
-      try {
-        await whatsappClient.logout();
+    try {
+      await whatsappClient.logout();
       } catch (logoutError) {
         console.log('Logout error (may already be logged out):', logoutError.message);
       }
