@@ -82,21 +82,31 @@ function Leads() {
     return pages;
   };
 
-  // Handle checkbox selection - no limit now, will be batched automatically
+  // Handle checkbox selection - max 120 leads
   const handleSelectLead = (leadId) => {
     setSelectedLeads(prev => {
       if (prev.includes(leadId)) {
         return prev.filter(id => id !== leadId);
       } else {
+        // Limit to 120 leads max
+        if (prev.length >= 120) {
+          alert('Maximum 120 leads can be selected at once. Please deselect some leads first.');
+          return prev;
+        }
         return [...prev, leadId];
       }
     });
   };
 
-  // Handle select all - no limit now
+  // Handle select all - max 120 leads
   const handleSelectAll = (e) => {
     if (e.target.checked) {
-      setSelectedLeads(currentLeads.map(lead => lead.leadId));
+      // Limit to 120 leads max
+      const maxSelectable = Math.min(120, currentLeads.length);
+      setSelectedLeads(currentLeads.slice(0, maxSelectable).map(lead => lead.leadId));
+      if (currentLeads.length > 120) {
+        alert('Maximum 120 leads can be selected at once. Only the first 120 leads on this page were selected.');
+      }
     } else {
       setSelectedLeads([]);
     }
@@ -275,7 +285,7 @@ function Leads() {
                             checked={selectedLeads.includes(lead.leadId)}
                             onChange={() => handleSelectLead(lead.leadId)}
                             className="form-check-input"
-                            disabled={lead.reached || lead.messageSent}
+                            disabled={lead.reached || lead.messageSent || (selectedLeads.length >= 120 && !selectedLeads.includes(lead.leadId))}
                           />
                         </td>
                         <td>
