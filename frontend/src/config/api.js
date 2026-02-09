@@ -28,6 +28,7 @@ export const API_ENDPOINTS = {
   WHATSAPP_ACCOUNT: `${API_BASE_URL}/whatsapp/account`,
   WHATSAPP_DISCONNECT: `${API_BASE_URL}/whatsapp/disconnect`,
   WHATSAPP_SEND_MESSAGES: `${API_BASE_URL}/whatsapp/send-messages`,
+  WHATSAPP_SEND_MESSAGES_BATCH: `${API_BASE_URL}/whatsapp/send-messages-batch`,
   
   // Greeting
   GREETING: `${API_BASE_URL}/greeting`,

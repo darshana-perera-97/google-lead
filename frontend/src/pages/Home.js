@@ -489,32 +489,6 @@ function Home() {
       return;
     }
 
-    // Check rate limit before proceeding
-    await fetchRateLimitStatus();
-    let currentRateLimit = rateLimit;
-    try {
-      const response = await fetch(API_ENDPOINTS.RATE_LIMIT_STATUS);
-      if (response.ok) {
-        currentRateLimit = await response.json();
-      }
-    } catch (error) {
-      console.error('Error fetching rate limit status:', error);
-      // Use existing rateLimit state as fallback
-    }
-    
-    const availableLeads = currentRateLimit.availableLeads ?? 0;
-    const minutesRemaining = currentRateLimit.minutesRemaining ?? 0;
-    
-    if (!currentRateLimit.canSend) {
-      alert(`Rate limit reached. You can send ${availableLeads} more lead(s). Next batch available in ${minutesRemaining} minute(s).`);
-      return;
-    }
-    
-    if (selectedItems.size > availableLeads) {
-      alert(`You can only send ${availableLeads} more lead(s) right now. Please select fewer leads or wait ${minutesRemaining} minute(s) for the next batch.`);
-      return;
-    }
-
     // Check WhatsApp connection first
     try {
       const statusResponse = await fetch(API_ENDPOINTS.WHATSAPP_STATUS);
@@ -599,8 +573,43 @@ function Home() {
         return;
       }
 
-      // Now send messages to the saved leads
-      const sendResponse = await fetch(API_ENDPOINTS.WHATSAPP_SEND_MESSAGES, {
+      // Calculate number of batches
+      const totalBatches = Math.ceil(savedLeadIds.length / 10);
+      const estimatedTime = totalBatches > 1 ? (totalBatches - 1) * 10 : 0;
+      
+      const confirmMessage = `You have selected ${selectedItems.size} item(s), ${savedLeadIds.length} lead(s) will be sent.\n\n` +
+        `They will be sent in ${totalBatches} batch(es) of 10.\n` +
+        (estimatedTime > 0 ? `Estimated time: ~${estimatedTime} minute(s) (10 min wait between batches).\n\n` : '\n') +
+        `Are you sure you want to proceed?`;
+      
+      if (!window.confirm(confirmMessage)) {
+        setSendingMessages(false);
+        return;
+      }
+
+      // Show progress modal
+      const progressModal = document.createElement('div');
+      progressModal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;';
+      progressModal.innerHTML = `
+        <div style="background:white;padding:30px;border-radius:10px;max-width:500px;text-align:center;">
+          <h3>Sending Messages...</h3>
+          <p id="progress-text">Starting batch sending...</p>
+          <div style="margin:20px 0;">
+            <div style="background:#f0f0f0;border-radius:10px;height:20px;overflow:hidden;">
+              <div id="progress-bar" style="background:#28a745;height:100%;width:0%;transition:width 0.3s;"></div>
+            </div>
+          </div>
+          <p id="progress-details" style="color:#666;font-size:14px;"></p>
+        </div>
+      `;
+      document.body.appendChild(progressModal);
+      
+      const progressText = progressModal.querySelector('#progress-text');
+      const progressBar = progressModal.querySelector('#progress-bar');
+      const progressDetails = progressModal.querySelector('#progress-details');
+
+      // Now send messages to the saved leads using batch endpoint
+      const sendResponse = await fetch(API_ENDPOINTS.WHATSAPP_SEND_MESSAGES_BATCH, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -610,50 +619,49 @@ function Home() {
 
       if (sendResponse.ok) {
         const sendData = await sendResponse.json();
-        const successCount = sendData.summary.success || 0;
-        const skippedCount = sendData.summary.skipped || 0;
-        const failedCount = sendData.summary.failed || 0;
         
-        let message = `Messages sent to ${savedLeadIds.length} leads!\n\n`;
-        message += `✓ ${successCount} successful`;
-        if (skippedCount > 0) {
-          message += `\n⚠ ${skippedCount} already sent`;
-        }
-        if (failedCount > 0) {
-          message += `\n✗ ${failedCount} failed`;
-        }
-        if (sendData.rateLimit) {
-          const rateLimitAvailable = sendData.rateLimit.availableLeads ?? 0;
-          const rateLimitMinutes = sendData.rateLimit.minutesRemaining ?? 0;
-          if (sendData.rateLimit.canSendMore) {
-            message += `\n\nYou can send ${rateLimitAvailable} more lead(s) now.`;
-          } else {
-            message += `\n\nRate limit reached. Next batch of 10 leads available in ${rateLimitMinutes} minute(s).`;
-          }
-        }
-        alert(message);
-        fetchRateLimitStatus(); // Refresh rate limit status
+        // Update progress
+        progressText.textContent = `Batch sending started! ${sendData.totalBatches} batch(es) queued.`;
+        progressDetails.textContent = `Total leads: ${sendData.totalLeads} | Processing in background...`;
+        progressBar.style.width = '10%';
+        
+        // Show completion after delay
+        setTimeout(() => {
+          progressText.textContent = 'Messages are being sent in the background!';
+          progressDetails.textContent = `All ${sendData.totalBatches} batch(es) are queued. The system will automatically send them with 10-minute delays between batches.`;
+          progressBar.style.width = '100%';
+          
+          setTimeout(() => {
+            document.body.removeChild(progressModal);
+            alert(`Batch sending started!\n\n` +
+              `Total leads: ${sendData.totalLeads}\n` +
+              `Total batches: ${sendData.totalBatches}\n\n` +
+              `Messages are being sent automatically in the background.\n` +
+              `Each batch of 10 will be sent with a 10-minute wait between batches.\n\n` +
+              `You can close this page - the messages will continue sending.`);
+            
+            // Update total leads count
+            setTotalLeads(saveData.totalLeads);
+            // Update analytics if provided
+            if (saveData.analytics) {
+              setReachedLeads(saveData.analytics.reachedLeads || 0);
+            }
+            // Clear selections after sending
+            const newSelected = new Set();
+            setSelectedItems(newSelected);
+            setSelectAll(false);
+            // Clear selections in backend
+            saveSelectedItemsToBackend(newSelected);
+            fetchRateLimitStatus(); // Refresh rate limit status
+            setSendingMessages(false);
+          }, 3000);
+        }, 2000);
       } else {
+        document.body.removeChild(progressModal);
         const sendError = await sendResponse.json();
-        if (sendError.error === 'Rate limit exceeded') {
-          const errorAvailableLeads = sendError.availableLeads ?? 0;
-          const errorMinutesRemaining = sendError.minutesRemaining ?? 0;
-          alert(`${sendError.message || 'Rate limit exceeded'}\n\nAvailable: ${errorAvailableLeads} lead(s)\nWait time: ${errorMinutesRemaining} minute(s)`);
-          fetchRateLimitStatus(); // Refresh rate limit status
-        } else {
-          alert(`Leads saved successfully, but error sending messages: ${sendError.error || 'Failed to send messages'}`);
-        }
+        alert(`Leads saved successfully, but error starting batch sending: ${sendError.error || 'Failed to start batch sending'}`);
+        setSendingMessages(false);
       }
-
-      // Update total leads count
-      setTotalLeads(saveData.totalLeads);
-      // Update analytics if provided
-      if (saveData.analytics) {
-        setReachedLeads(saveData.analytics.reachedLeads || 0);
-      }
-      // Clear selections after sending
-      setSelectedItems(new Set());
-      setSelectAll(false);
     } catch (error) {
       console.error('Error sending messages:', error);
       alert('Error sending messages. Please try again.');

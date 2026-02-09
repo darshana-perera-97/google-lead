@@ -1343,8 +1343,8 @@ app.get('/api/rate-limit/status', (req, res) => {
   });
 });
 
-// Send messages to leads
-app.post('/api/whatsapp/send-messages', async (req, res) => {
+// Send messages to leads in batches (queued)
+app.post('/api/whatsapp/send-messages-batch', async (req, res) => {
   if (whatsappStatus !== 'connected' || !whatsappClient) {
     return res.status(400).json({ error: 'WhatsApp is not connected' });
   }
@@ -1355,25 +1355,84 @@ app.post('/api/whatsapp/send-messages', async (req, res) => {
     return res.status(400).json({ error: 'Lead IDs array is required' });
   }
 
-  // Enforce maximum 10 leads per request
-  if (leadIds.length > RATE_LIMIT_MAX_LEADS) {
-    return res.status(400).json({ 
-      error: `Maximum ${RATE_LIMIT_MAX_LEADS} leads can be sent at once. You requested ${leadIds.length} leads.` 
-    });
+  // Group leads into batches of 10
+  const batches = [];
+  for (let i = 0; i < leadIds.length; i += RATE_LIMIT_MAX_LEADS) {
+    batches.push(leadIds.slice(i, i + RATE_LIMIT_MAX_LEADS));
   }
 
-  // Check rate limit
-  const rateLimitCheck = checkRateLimit(leadIds.length);
-  if (!rateLimitCheck.allowed) {
-    return res.status(429).json({
-      error: 'Rate limit exceeded',
-      message: rateLimitCheck.message,
-      availableLeads: rateLimitCheck.availableLeads,
-      minutesRemaining: rateLimitCheck.minutesRemaining,
-      timeUntilReset: rateLimitCheck.timeUntilReset
-    });
-  }
+  // Return immediately with batch info
+  res.json({
+    message: 'Batch sending started',
+    totalLeads: leadIds.length,
+    totalBatches: batches.length,
+    batches: batches.map((batch, index) => ({
+      batchNumber: index + 1,
+      leadIds: batch,
+      leadCount: batch.length
+    }))
+  });
 
+  // Process batches asynchronously
+  (async () => {
+    const allResults = [];
+    let totalSuccess = 0;
+    let totalSkipped = 0;
+    let totalFailed = 0;
+
+    for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
+      const batch = batches[batchIndex];
+      console.log(`Processing batch ${batchIndex + 1}/${batches.length} with ${batch.length} leads...`);
+
+      // Wait for rate limit if not first batch
+      if (batchIndex > 0) {
+        const now = Date.now();
+        const rateLimit = readRateLimit();
+        
+        if (rateLimit.windowStartTime) {
+          const timeSinceLastBatch = now - rateLimit.windowStartTime;
+          const timeToWait = Math.max(0, RATE_LIMIT_COOLDOWN_MS - timeSinceLastBatch);
+          
+          if (timeToWait > 0) {
+            const minutesToWait = Math.ceil(timeToWait / 60000);
+            console.log(`Waiting ${minutesToWait} minute(s) before batch ${batchIndex + 1}...`);
+            await new Promise(resolve => setTimeout(resolve, timeToWait));
+          }
+        }
+      }
+
+      // Check and update rate limit for this batch
+      const rateLimitCheck = checkRateLimit(batch.length);
+      if (!rateLimitCheck.allowed) {
+        // Wait until rate limit allows
+        const waitTime = rateLimitCheck.timeUntilReset || RATE_LIMIT_COOLDOWN_MS;
+        console.log(`Rate limit reached, waiting ${Math.ceil(waitTime / 60000)} minute(s)...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+        // Retry rate limit check
+        const retryCheck = checkRateLimit(batch.length);
+        if (!retryCheck.allowed) {
+          console.error(`Cannot send batch ${batchIndex + 1} even after waiting`);
+          continue;
+        }
+      }
+
+      // Send this batch
+      const batchResults = await sendMessagesToLeads(batch);
+      allResults.push(...batchResults);
+      
+      totalSuccess += batchResults.filter(r => r.status === 'success').length;
+      totalSkipped += batchResults.filter(r => r.status === 'skipped').length;
+      totalFailed += batchResults.filter(r => r.status === 'error').length;
+
+      console.log(`Batch ${batchIndex + 1}/${batches.length} completed: ${batchResults.filter(r => r.status === 'success').length} success, ${batchResults.filter(r => r.status === 'error').length} failed`);
+    }
+
+    console.log(`All batches completed! Total: ${totalSuccess} success, ${totalSkipped} skipped, ${totalFailed} failed`);
+  })();
+});
+
+// Helper function to send messages to a batch of leads
+const sendMessagesToLeads = async (leadIds) => {
   const leads = readLeads();
   const messages = readMessages();
   const greeting = getGreeting();
@@ -1420,47 +1479,40 @@ app.post('/api/whatsapp/send-messages', async (req, res) => {
       
       // Handle Sri Lankan numbers
       if (formattedNumber.startsWith('0') && formattedNumber.length === 10) {
-        // Remove leading 0 and add country code
         formattedNumber = '94' + formattedNumber.substring(1);
       } else if (!formattedNumber.startsWith('94') && formattedNumber.length === 9) {
-        formattedNumber = '94' + formattedNumber; // Add SL country code
+        formattedNumber = '94' + formattedNumber;
       } else if (formattedNumber.startsWith('+947')) {
-        // Already has +947, just remove the +
         formattedNumber = formattedNumber.substring(1);
       }
       
-      // Validate the formatted number
       if (!formattedNumber.startsWith('94') || formattedNumber.length < 11 || formattedNumber.length > 12) {
         throw new Error(`Invalid phone number format: ${phoneNumber} (formatted: ${formattedNumber})`);
       }
       
       const chatId = `${formattedNumber}@c.us`;
       
-      // Check if the number exists in WhatsApp before sending
+      // Check if the number exists in WhatsApp
       try {
         const numberExists = await whatsappClient.getNumberId(chatId);
         if (!numberExists) {
           throw new Error(`Phone number ${phoneNumber} is not registered on WhatsApp`);
         }
       } catch (checkError) {
-        // If getNumberId fails, it might mean the number doesn't exist
-        // Log but continue - sometimes this check can fail even for valid numbers
         console.warn(`Could not verify number ${phoneNumber}:`, checkError.message);
       }
 
       // Send greeting
       const greetingMessage = `Hi ${greeting}`;
       await whatsappClient.sendMessage(chatId, greetingMessage);
-      await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second
+      await new Promise(resolve => setTimeout(resolve, 1000));
 
       // Send messages based on website type
       if (hasValidWebsite) {
-        // Send Type 1 messages
         await whatsappClient.sendMessage(chatId, categoryMessages.type1.message1);
         await new Promise(resolve => setTimeout(resolve, 1000));
         await whatsappClient.sendMessage(chatId, categoryMessages.type1.message2);
       } else {
-        // Send Type 2 messages
         await whatsappClient.sendMessage(chatId, categoryMessages.type2.message1);
         await new Promise(resolve => setTimeout(resolve, 1000));
         await whatsappClient.sendMessage(chatId, categoryMessages.type2.message2);
@@ -1484,7 +1536,6 @@ app.post('/api/whatsapp/send-messages', async (req, res) => {
     } catch (error) {
       console.error(`Error sending message to ${leadId}:`, error);
       
-      // Provide more user-friendly error messages
       let errorMessage = error.message;
       if (error.message.includes('No LID for user') || error.message.includes('not registered')) {
         errorMessage = `Phone number ${phoneNumber} is not registered on WhatsApp or is invalid`;
@@ -1502,11 +1553,9 @@ app.post('/api/whatsapp/send-messages', async (req, res) => {
       });
     }
 
-    // Add random delay between every 2 leads (5-10 seconds)
-    // Delay after lead 2, 4, 6, etc. (i is 0-indexed, so i+1 is the lead number)
+    // Add random delay between every 2 leads
     if ((i + 1) % 2 === 0 && i < leadIds.length - 1) {
-      const delaySeconds = Math.floor(Math.random() * (10 - 5 + 1)) + 5; // Random between 5-10 seconds
-      console.log(`Waiting ${delaySeconds} seconds before processing next lead...`);
+      const delaySeconds = Math.floor(Math.random() * (10 - 5 + 1)) + 5;
       await new Promise(resolve => setTimeout(resolve, delaySeconds * 1000));
     }
   }
@@ -1514,6 +1563,43 @@ app.post('/api/whatsapp/send-messages', async (req, res) => {
   // Save updated leads
   writeLeads(leads);
   updateAnalytics();
+
+  return results;
+};
+
+// Send messages to leads
+app.post('/api/whatsapp/send-messages', async (req, res) => {
+  if (whatsappStatus !== 'connected' || !whatsappClient) {
+    return res.status(400).json({ error: 'WhatsApp is not connected' });
+  }
+
+  const { leadIds } = req.body;
+  
+  if (!leadIds || !Array.isArray(leadIds) || leadIds.length === 0) {
+    return res.status(400).json({ error: 'Lead IDs array is required' });
+  }
+
+  // Enforce maximum 10 leads per request
+  if (leadIds.length > RATE_LIMIT_MAX_LEADS) {
+    return res.status(400).json({ 
+      error: `Maximum ${RATE_LIMIT_MAX_LEADS} leads can be sent at once. You requested ${leadIds.length} leads.` 
+    });
+  }
+
+  // Check rate limit
+  const rateLimitCheck = checkRateLimit(leadIds.length);
+  if (!rateLimitCheck.allowed) {
+    return res.status(429).json({
+      error: 'Rate limit exceeded',
+      message: rateLimitCheck.message,
+      availableLeads: rateLimitCheck.availableLeads,
+      minutesRemaining: rateLimitCheck.minutesRemaining,
+      timeUntilReset: rateLimitCheck.timeUntilReset
+    });
+  }
+
+  // Use the helper function
+  const results = await sendMessagesToLeads(leadIds);
 
   // Get updated rate limit status
   const rateLimit = readRateLimit();

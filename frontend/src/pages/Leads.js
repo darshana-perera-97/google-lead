@@ -82,31 +82,21 @@ function Leads() {
     return pages;
   };
 
-  // Handle checkbox selection
+  // Handle checkbox selection - no limit now, will be batched automatically
   const handleSelectLead = (leadId) => {
     setSelectedLeads(prev => {
       if (prev.includes(leadId)) {
         return prev.filter(id => id !== leadId);
       } else {
-        // Limit to 10 leads max
-        if (prev.length >= 10) {
-          alert('Maximum 10 leads can be selected at once. Please deselect some leads first.');
-          return prev;
-        }
         return [...prev, leadId];
       }
     });
   };
 
-  // Handle select all
+  // Handle select all - no limit now
   const handleSelectAll = (e) => {
     if (e.target.checked) {
-      // Limit to 10 leads max
-      const maxSelectable = Math.min(10, currentLeads.length);
-      setSelectedLeads(currentLeads.slice(0, maxSelectable).map(lead => lead.leadId));
-      if (currentLeads.length > 10) {
-        alert('Maximum 10 leads can be selected at once. Only the first 10 leads on this page were selected.');
-      }
+      setSelectedLeads(currentLeads.map(lead => lead.leadId));
     } else {
       setSelectedLeads([]);
     }
@@ -116,36 +106,51 @@ function Leads() {
   const isAllSelected = currentLeads.length > 0 && 
     currentLeads.every(lead => selectedLeads.includes(lead.leadId));
 
-  // Send messages to selected leads
+  // Send messages to selected leads in batches
   const handleSendMessages = async () => {
     if (selectedLeads.length === 0) {
       alert('Please select at least one lead to send messages');
       return;
     }
 
-    // Check rate limit before sending - refresh status first
-    await fetchRateLimitStatus();
+    // Calculate number of batches
+    const totalBatches = Math.ceil(selectedLeads.length / 10);
+    const estimatedTime = totalBatches > 1 ? (totalBatches - 1) * 10 : 0;
     
-    const availableLeads = rateLimit.availableLeads ?? 0;
-    const minutesRemaining = rateLimit.minutesRemaining ?? 0;
+    const confirmMessage = `You have selected ${selectedLeads.length} lead(s).\n\n` +
+      `They will be sent in ${totalBatches} batch(es) of 10.\n` +
+      (estimatedTime > 0 ? `Estimated time: ~${estimatedTime} minute(s) (10 min wait between batches).\n\n` : '\n') +
+      `Are you sure you want to proceed?`;
     
-    if (!rateLimit.canSend) {
-      alert(`Rate limit reached. You can send ${availableLeads} more lead(s). Next batch available in ${minutesRemaining} minute(s).`);
-      return;
-    }
-
-    if (selectedLeads.length > availableLeads) {
-      alert(`You can only send ${availableLeads} more lead(s) right now. Please select fewer leads or wait ${minutesRemaining} minute(s) for the next batch.`);
-      return;
-    }
-
-    if (!window.confirm(`Are you sure you want to send messages to ${selectedLeads.length} lead(s)?`)) {
+    if (!window.confirm(confirmMessage)) {
       return;
     }
 
     setSending(true);
+    
+    // Show progress modal
+    const progressModal = document.createElement('div');
+    progressModal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:9999;display:flex;align-items:center;justify-content:center;';
+    progressModal.innerHTML = `
+      <div style="background:white;padding:30px;border-radius:10px;max-width:500px;text-align:center;">
+        <h3>Sending Messages...</h3>
+        <p id="progress-text">Starting batch sending...</p>
+        <div style="margin:20px 0;">
+          <div style="background:#f0f0f0;border-radius:10px;height:20px;overflow:hidden;">
+            <div id="progress-bar" style="background:#28a745;height:100%;width:0%;transition:width 0.3s;"></div>
+          </div>
+        </div>
+        <p id="progress-details" style="color:#666;font-size:14px;"></p>
+      </div>
+    `;
+    document.body.appendChild(progressModal);
+    
+    const progressText = progressModal.querySelector('#progress-text');
+    const progressBar = progressModal.querySelector('#progress-bar');
+    const progressDetails = progressModal.querySelector('#progress-details');
+
     try {
-      const response = await fetch(API_ENDPOINTS.WHATSAPP_SEND_MESSAGES, {
+      const response = await fetch(API_ENDPOINTS.WHATSAPP_SEND_MESSAGES_BATCH, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -155,35 +160,43 @@ function Leads() {
 
       if (response.ok) {
         const data = await response.json();
-        let message = `Messages sent: ${data.summary.success} successful, ${data.summary.failed} failed`;
-        if (data.rateLimit) {
-          const rateLimitAvailable = data.rateLimit.availableLeads ?? 0;
-          const rateLimitMinutes = data.rateLimit.minutesRemaining ?? 0;
-          if (data.rateLimit.canSendMore) {
-            message += `\n\nYou can send ${rateLimitAvailable} more lead(s) now.`;
-          } else {
-            message += `\n\nRate limit reached. Next batch of 10 leads available in ${rateLimitMinutes} minute(s).`;
-          }
-        }
-        alert(message);
-        setSelectedLeads([]);
-        fetchLeads(); // Refresh leads to update status
-        fetchRateLimitStatus(); // Refresh rate limit status
+        
+        // Update progress
+        progressText.textContent = `Batch sending started! ${data.totalBatches} batch(es) queued.`;
+        progressDetails.textContent = `Total leads: ${data.totalLeads} | Processing in background...`;
+        progressBar.style.width = '10%';
+        
+        // Poll for completion (simplified - in real app you'd use WebSockets or polling)
+        // For now, just show a message and close after a delay
+        setTimeout(() => {
+          progressText.textContent = 'Messages are being sent in the background!';
+          progressDetails.textContent = `All ${data.totalBatches} batch(es) are queued. The system will automatically send them with 10-minute delays between batches.`;
+          progressBar.style.width = '100%';
+          
+          setTimeout(() => {
+            document.body.removeChild(progressModal);
+            alert(`Batch sending started!\n\n` +
+              `Total leads: ${data.totalLeads}\n` +
+              `Total batches: ${data.totalBatches}\n\n` +
+              `Messages are being sent automatically in the background.\n` +
+              `Each batch of 10 will be sent with a 10-minute wait between batches.\n\n` +
+              `You can close this page - the messages will continue sending.`);
+            setSelectedLeads([]);
+            fetchLeads(); // Refresh leads to update status
+            fetchRateLimitStatus(); // Refresh rate limit status
+            setSending(false);
+          }, 3000);
+        }, 2000);
       } else {
+        document.body.removeChild(progressModal);
         const error = await response.json();
-        if (error.error === 'Rate limit exceeded') {
-          const errorAvailableLeads = error.availableLeads ?? 0;
-          const errorMinutesRemaining = error.minutesRemaining ?? 0;
-          alert(`${error.message || 'Rate limit exceeded'}\n\nAvailable: ${errorAvailableLeads} lead(s)\nWait time: ${errorMinutesRemaining} minute(s)`);
-          fetchRateLimitStatus(); // Refresh rate limit status
-        } else {
-          alert(`Error: ${error.error || 'Failed to send messages'}`);
-        }
+        alert(`Error: ${error.error || 'Failed to start batch sending'}`);
+        setSending(false);
       }
     } catch (error) {
+      document.body.removeChild(progressModal);
       console.error('Error sending messages:', error);
       alert('Error sending messages. Please try again.');
-    } finally {
       setSending(false);
     }
   };
@@ -204,8 +217,8 @@ function Leads() {
             <button
               className="btn btn-success"
               onClick={handleSendMessages}
-              disabled={sending || !rateLimit.canSend || selectedLeads.length > rateLimit.availableLeads}
-              title={!rateLimit.canSend ? `Rate limit reached. Wait ${rateLimit.minutesRemaining ?? 0} minute(s).` : ''}
+              disabled={sending}
+              title="Selected leads will be automatically grouped into batches of 10 and sent with 10-minute delays"
             >
               {sending ? 'Sending...' : `Send Messages (${selectedLeads.length})`}
             </button>
@@ -262,7 +275,7 @@ function Leads() {
                             checked={selectedLeads.includes(lead.leadId)}
                             onChange={() => handleSelectLead(lead.leadId)}
                             className="form-check-input"
-                            disabled={lead.reached || lead.messageSent || (selectedLeads.length >= 10 && !selectedLeads.includes(lead.leadId))}
+                            disabled={lead.reached || lead.messageSent}
                           />
                         </td>
                         <td>
