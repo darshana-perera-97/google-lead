@@ -28,6 +28,7 @@ const analyticsFilePath = path.join(__dirname, 'data', 'analytics.json');
 const lastSearchResultsFilePath = path.join(__dirname, 'data', 'lastSearchResults.json');
 const messagesFilePath = path.join(__dirname, 'data', 'messages.json');
 const rateLimitFilePath = path.join(__dirname, 'data', 'rateLimit.json');
+const queueFilePath = path.join(__dirname, 'data', 'queue.json');
 
 // Helper function to read characters
 const readCharacters = () => {
@@ -72,6 +73,21 @@ const readLeads = () => {
 // Helper function to write leads
 const writeLeads = (leads) => {
   fs.writeFileSync(leadsFilePath, JSON.stringify(leads, null, 2));
+};
+
+// Helper function to read queue
+const readQueue = () => {
+  try {
+    const data = fs.readFileSync(queueFilePath, 'utf8');
+    return JSON.parse(data);
+  } catch (error) {
+    return [];
+  }
+};
+
+// Helper function to write queue
+const writeQueue = (queue) => {
+  fs.writeFileSync(queueFilePath, JSON.stringify(queue, null, 2));
 };
 
 // Helper function to read analytics
@@ -660,6 +676,343 @@ app.post('/api/leads', (req, res) => {
     savedLeadIds: savedLeadIds,
     analytics
   });
+});
+
+// Add items to queue endpoint
+app.post('/api/queue', (req, res) => {
+  const { leads } = req.body;
+  
+  if (!leads || !Array.isArray(leads)) {
+    return res.status(400).json({ error: 'Leads array is required' });
+  }
+
+  const existingQueue = readQueue();
+  let addedCount = 0;
+  const addedLeadIds = [];
+  
+  // Add new items to queue (avoid duplicates based on leadId or businessName + contactNumber + searchPhrase)
+  leads.forEach(newLead => {
+    // Validate required fields
+    if (!newLead.leadId || !newLead.businessName || !newLead.searchPhrase) {
+      console.warn('Skipping lead with missing required fields:', newLead);
+      return;
+    }
+
+    // Check for duplicates
+    const exists = existingQueue.some(item => 
+      item.leadId === newLead.leadId || 
+      (item.businessName === newLead.businessName && 
+       item.contactNumber === newLead.contactNumber && 
+       item.searchPhrase === newLead.searchPhrase)
+    );
+    
+    if (!exists) {
+      // Ensure all required fields are present
+      const itemToAdd = {
+        leadId: newLead.leadId,
+        businessName: newLead.businessName || '',
+        contactNumber: newLead.contactNumber || '',
+        emailId: newLead.emailId || '',
+        website: newLead.website || '',
+        searchPhrase: newLead.searchPhrase || '',
+        category: newLead.category || '',
+        savedDate: newLead.savedDate || new Date().toISOString()
+      };
+      existingQueue.push(itemToAdd);
+      addedLeadIds.push(itemToAdd.leadId);
+      addedCount++;
+    }
+  });
+
+  writeQueue(existingQueue);
+  
+  res.json({
+    message: 'Items added to queue successfully',
+    count: addedCount,
+    totalQueueItems: existingQueue.length,
+    addedLeadIds: addedLeadIds
+  });
+});
+
+// Get all queue items
+app.get('/api/queue', (req, res) => {
+  const queue = readQueue();
+  res.json(queue);
+});
+
+// Remove items from queue
+app.post('/api/queue/remove', (req, res) => {
+  const { leadIds } = req.body;
+  
+  if (!leadIds || !Array.isArray(leadIds)) {
+    return res.status(400).json({ error: 'Lead IDs array is required' });
+  }
+
+  const existingQueue = readQueue();
+  const initialLength = existingQueue.length;
+  
+  // Remove items with matching leadIds
+  const updatedQueue = existingQueue.filter(item => !leadIds.includes(item.leadId));
+  const removedCount = initialLength - updatedQueue.length;
+  
+  writeQueue(updatedQueue);
+  
+  res.json({
+    message: 'Items removed from queue successfully',
+    count: removedCount,
+    totalQueueItems: updatedQueue.length
+  });
+});
+
+// Helper function to send message to a queue item
+const sendMessageToQueueItem = async (queueItem) => {
+  const messages = readMessages();
+  const greeting = getGreeting();
+  
+  // Get messages for the item's category
+  const categoryMessages = messages.find(msg => msg.category === queueItem.category);
+  if (!categoryMessages) {
+    return { status: 'error', message: 'No messages found for category' };
+  }
+
+  // Check if website is valid
+  const hasValidWebsite = isValidWebsite(queueItem.website);
+  const phoneNumber = queueItem.contactNumber;
+
+  if (!phoneNumber || phoneNumber === 'N/A') {
+    return { status: 'error', message: 'No contact number' };
+  }
+
+  try {
+    // Format phone number (remove + and spaces, add country code if needed)
+    let formattedNumber = phoneNumber.replace(/\s+/g, '').replace(/\+/g, '').replace(/-/g, '');
+    
+    // Handle Sri Lankan numbers
+    if (formattedNumber.startsWith('0') && formattedNumber.length === 10) {
+      formattedNumber = '94' + formattedNumber.substring(1);
+    } else if (!formattedNumber.startsWith('94') && formattedNumber.length === 9) {
+      formattedNumber = '94' + formattedNumber;
+    } else if (formattedNumber.startsWith('+947')) {
+      formattedNumber = formattedNumber.substring(1);
+    }
+    
+    if (!formattedNumber.startsWith('94') || formattedNumber.length < 11 || formattedNumber.length > 12) {
+      throw new Error(`Invalid phone number format: ${phoneNumber} (formatted: ${formattedNumber})`);
+    }
+    
+    const chatId = `${formattedNumber}@c.us`;
+    
+    // Check if the number exists in WhatsApp
+    try {
+      const numberExists = await whatsappClient.getNumberId(chatId);
+      if (!numberExists) {
+        throw new Error(`Phone number ${phoneNumber} is not registered on WhatsApp`);
+      }
+    } catch (checkError) {
+      console.warn(`Could not verify number ${phoneNumber}:`, checkError.message);
+    }
+
+    // Send greeting
+    const greetingMessage = `Hi ${greeting}`;
+    await whatsappClient.sendMessage(chatId, greetingMessage);
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // Send messages based on website type
+    if (hasValidWebsite) {
+      await whatsappClient.sendMessage(chatId, categoryMessages.type1.message1);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      await whatsappClient.sendMessage(chatId, categoryMessages.type1.message2);
+    } else {
+      await whatsappClient.sendMessage(chatId, categoryMessages.type2.message1);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      await whatsappClient.sendMessage(chatId, categoryMessages.type2.message2);
+    }
+
+    return { 
+      status: 'success', 
+      message: 'Messages sent successfully',
+      messageType: hasValidWebsite ? 'type1' : 'type2'
+    };
+  } catch (error) {
+    console.error(`Error sending message to ${queueItem.leadId}:`, error);
+    
+    let errorMessage = error.message;
+    if (error.message.includes('No LID for user') || error.message.includes('not registered')) {
+      errorMessage = `Phone number ${phoneNumber} is not registered on WhatsApp or is invalid`;
+    } else if (error.message.includes('Invalid phone number')) {
+      errorMessage = error.message;
+    } else if (error.message.includes('not found')) {
+      errorMessage = `Contact not found: ${phoneNumber}`;
+    }
+    
+    return { 
+      status: 'error', 
+      message: errorMessage,
+      phoneNumber: phoneNumber
+    };
+  }
+};
+
+// Process queue automatically - send messages and move to leads
+app.post('/api/queue/process', async (req, res) => {
+  if (whatsappStatus !== 'connected' || !whatsappClient) {
+    return res.status(400).json({ error: 'WhatsApp is not connected' });
+  }
+
+  // Return immediately - processing happens in background
+  res.json({
+    message: 'Queue processing started',
+    status: 'processing'
+  });
+
+  // Process queue in background
+  (async () => {
+    let totalProcessed = 0;
+    let totalSuccess = 0;
+    let totalFailed = 0;
+    let totalSkipped = 0;
+    let totalContactsSent = 0; // Track total contacts sent across all batches
+
+    while (true) {
+      // Read current queue
+      const queue = readQueue();
+      
+      if (queue.length === 0) {
+        console.log('Queue is empty. Processing complete.');
+        break;
+      }
+
+      // Determine batch size based on available rate limit
+      const currentRateLimit = readRateLimit();
+      const availableLeads = currentRateLimit.leadsSent >= RATE_LIMIT_MAX_LEADS 
+        ? 0 
+        : RATE_LIMIT_MAX_LEADS - currentRateLimit.leadsSent;
+      
+      if (availableLeads === 0) {
+        // Rate limit reached, wait for reset
+        const now = Date.now();
+        const timeSinceWindowStart = currentRateLimit.windowStartTime 
+          ? now - currentRateLimit.windowStartTime 
+          : 0;
+        const timeUntilReset = Math.max(0, RATE_LIMIT_COOLDOWN_MS - timeSinceWindowStart);
+        const minutesToWait = Math.ceil(timeUntilReset / 60000);
+        console.log(`Rate limit reached. Waiting ${minutesToWait} minute(s) before processing next batch...`);
+        await new Promise(resolve => setTimeout(resolve, timeUntilReset));
+        continue;
+      }
+
+      // Process items in batches of up to available leads
+      const batchSize = Math.min(availableLeads, queue.length, RATE_LIMIT_MAX_LEADS);
+      const batch = queue.slice(0, batchSize);
+      
+      // Check and update rate limit for this batch
+      const rateLimitCheck = checkRateLimit(batchSize);
+      if (!rateLimitCheck.allowed) {
+        const waitTime = rateLimitCheck.timeUntilReset || RATE_LIMIT_COOLDOWN_MS;
+        const minutesToWait = Math.ceil(waitTime / 60000);
+        console.log(`Rate limit check failed. Waiting ${minutesToWait} minute(s)...`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+        continue;
+      }
+
+      console.log(`Processing batch of ${batch.length} items from queue...`);
+
+      const leads = readLeads();
+      const successfulLeadIds = [];
+      const failedLeadIds = [];
+
+      for (let i = 0; i < batch.length; i++) {
+        const queueItem = batch[i];
+        totalProcessed++;
+
+        // Check if already exists in leads (avoid duplicates)
+        const existsInLeads = leads.some(lead => 
+          lead.leadId === queueItem.leadId || 
+          (lead.businessName === queueItem.businessName && 
+           lead.contactNumber === queueItem.contactNumber && 
+           lead.searchPhrase === queueItem.searchPhrase)
+        );
+
+        if (existsInLeads) {
+          console.log(`Skipping ${queueItem.leadId} - already exists in leads`);
+          totalSkipped++;
+          // Remove from queue even if it exists in leads
+          successfulLeadIds.push(queueItem.leadId);
+          continue;
+        }
+
+        // Send message
+        const result = await sendMessageToQueueItem(queueItem);
+
+        if (result.status === 'success') {
+          // Add to leads
+          const leadToAdd = {
+            leadId: queueItem.leadId,
+            businessName: queueItem.businessName || '',
+            contactNumber: queueItem.contactNumber || '',
+            emailId: queueItem.emailId || '',
+            website: queueItem.website || '',
+            searchPhrase: queueItem.searchPhrase || '',
+            category: queueItem.category || '',
+            savedDate: queueItem.savedDate || new Date().toISOString(),
+            reached: true,
+            messageSent: true,
+            reachedDate: new Date().toISOString(),
+            messageSentDate: new Date().toISOString()
+          };
+          leads.push(leadToAdd);
+          successfulLeadIds.push(queueItem.leadId);
+          totalSuccess++;
+          totalContactsSent++; // Increment total contacts sent
+          console.log(`Successfully sent message to ${queueItem.leadId} and added to leads (Total sent: ${totalContactsSent})`);
+        } else {
+          failedLeadIds.push(queueItem.leadId);
+          totalFailed++;
+          console.log(`Failed to send message to ${queueItem.leadId}: ${result.message}`);
+          // Don't remove failed items from queue - they can be retried later
+        }
+
+        // Add delay after processing each contact
+        // 1 minute gap between 2 contacts
+        // After every 10 contacts, 25 minute gap
+        // Only wait if there are more items to process (not the last item in the last batch)
+        const isLastItem = (i === batch.length - 1);
+        const queueAfterThis = readQueue();
+        const willHaveMoreItems = isLastItem ? queueAfterThis.length > 0 : true;
+        
+        if (willHaveMoreItems) {
+          // Check if we've sent to a multiple of 10 contacts (after every 10th contact)
+          if (totalContactsSent % 10 === 0 && totalContactsSent > 0) {
+            const waitMinutes = 25;
+            console.log(`Sent to ${totalContactsSent} contacts total. Waiting ${waitMinutes} minutes before next contact...`);
+            await new Promise(resolve => setTimeout(resolve, waitMinutes * 60 * 1000));
+          } else {
+            // 1 minute gap between contacts
+            const waitMinutes = 1;
+            console.log(`Waiting ${waitMinutes} minute(s) before next contact...`);
+            await new Promise(resolve => setTimeout(resolve, waitMinutes * 60 * 1000));
+          }
+        }
+      }
+
+      // Rate limit is already updated by checkRateLimit call above
+      // Update leads file
+      writeLeads(leads);
+      updateAnalytics();
+
+      // Remove successful items from queue
+      if (successfulLeadIds.length > 0) {
+        const updatedQueue = queue.filter(item => !successfulLeadIds.includes(item.leadId));
+        writeQueue(updatedQueue);
+        console.log(`Removed ${successfulLeadIds.length} successful item(s) from queue`);
+      }
+
+      // No additional wait needed between batches - delays are handled between contacts
+      // (1 minute between contacts, 25 minutes after every 10 contacts)
+    }
+
+    console.log(`Queue processing complete! Total: ${totalProcessed} processed, ${totalSuccess} success, ${totalSkipped} skipped, ${totalFailed} failed`);
+  })();
 });
 
 // Get all leads

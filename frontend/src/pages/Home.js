@@ -670,6 +670,94 @@ function Home() {
     }
   };
 
+  // Add selected items to queue
+  const handleAddToQueue = async () => {
+    if (selectedItems.size === 0) {
+      alert('Please select at least one item to add to queue');
+      return;
+    }
+
+    if (!searchResults || !searchResults.organic) {
+      alert('No search results available');
+      return;
+    }
+
+    setSavingLeads(true);
+    try {
+      const selectedLeads = Array.from(selectedItems).map((index) => {
+        const result = searchResults.organic[index];
+        // Extract email from snippet, link, or title
+        let emailId = extractEmail(result.snippet || '');
+        if (!emailId) {
+          emailId = extractEmail(result.link || '');
+        }
+        if (!emailId) {
+          emailId = extractEmail(result.title || '');
+        }
+
+        // Validate mobile number before saving
+        let contactNumber = result.phone || '';
+        if (contactNumber) {
+          contactNumber = isValidMobileNumber(contactNumber);
+        }
+        
+        // Only save if we have a valid mobile number
+        if (!contactNumber) {
+          return null;
+        }
+        
+        return {
+          leadId: `lead_${Date.now()}_${index}`,
+          businessName: result.title || '',
+          contactNumber: contactNumber,
+          emailId: emailId || '',
+          website: result.link || '',
+          searchPhrase: searchText.trim(),
+          category: category || '',
+          savedDate: new Date().toISOString()
+        };
+      }).filter(lead => lead !== null); // Remove null entries
+
+      const response = await fetch(API_ENDPOINTS.QUEUE, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ leads: selectedLeads }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        
+        if (data.count > 0) {
+          let message = `Successfully added ${data.count} item(s) to queue!`;
+          if (data.count < selectedLeads.length) {
+            message += `\nNote: ${selectedLeads.length - data.count} item(s) were skipped (may already exist in queue or missing contact numbers).`;
+          }
+          message += `\n\nTotal items in queue: ${data.totalQueueItems}`;
+          alert(message);
+        } else {
+          alert('No new items were added to queue. They may already exist in the queue.');
+        }
+        
+        // Clear selections after adding to queue
+        const newSelected = new Set();
+        setSelectedItems(newSelected);
+        setSelectAll(false);
+        // Clear selections in backend
+        saveSelectedItemsToBackend(newSelected);
+      } else {
+        const error = await response.json();
+        alert(error.error || 'Error adding items to queue');
+      }
+    } catch (error) {
+      console.error('Error adding to queue:', error);
+      alert('Error adding items to queue');
+    } finally {
+      setSavingLeads(false);
+    }
+  };
+
   // Save selected leads to backend
   const handleSaveSelectedLeads = async () => {
     if (selectedItems.size === 0) {
@@ -903,22 +991,14 @@ function Home() {
                 >
                   ⬇ Download CSV
                 </button>
-                <button
-                  className="btn btn-outline-primary"
-                  onClick={handleSaveToGoogleSheets}
-                  disabled={savingToSheets}
-                  title="Save search results to Google Sheets"
-                >
-                  {savingToSheets ? 'Saving...' : '📊 Save to Google Sheets'}
-                </button>
                 {selectedItems.size > 0 && (
                   <>
                     <button
                       className="btn btn-success"
-                      onClick={handleSaveSelectedLeads}
+                      onClick={handleAddToQueue}
                       disabled={savingLeads || sendingMessages}
                     >
-                      {savingLeads ? 'Saving...' : `Save Selected (${selectedItems.size})`}
+                      {savingLeads ? 'Adding...' : `Add to Queue (${selectedItems.size})`}
                     </button>
                     <button
                       className="btn btn-primary"

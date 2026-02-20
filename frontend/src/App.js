@@ -3,6 +3,7 @@ import './App.css';
 import BottomNavbar from './BottomNavbar';
 import Home from './pages/Home';
 import Leads from './pages/Leads';
+import Queue from './pages/Queue';
 import Messages from './pages/Messages';
 import Link from './pages/Link';
 import Settings from './pages/Settings';
@@ -13,6 +14,7 @@ function App() {
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/leads" element={<Leads />} />
+        <Route path="/queue" element={<Queue />} />
         <Route path="/messages" element={<Messages />} />
         <Route path="/link" element={<Link />} />
         <Route path="/settings" element={<Settings />} />

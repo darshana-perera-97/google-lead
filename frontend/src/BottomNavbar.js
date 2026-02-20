@@ -1,5 +1,5 @@
 import { Link as RouterLink, useLocation } from 'react-router-dom';
-import { FaHome, FaUsers, FaEnvelope, FaLink, FaCog } from 'react-icons/fa';
+import { FaHome, FaUsers, FaEnvelope, FaLink, FaCog, FaList } from 'react-icons/fa';
 
 function BottomNavbar() {
   const location = useLocation();
@@ -26,6 +26,14 @@ function BottomNavbar() {
         >
           <FaUsers size={24} />
           <span className="nav-label">Leads</span>
+        </RouterLink>
+        <RouterLink 
+          to="/queue" 
+          className={`btn btn-nav ${isActive('/queue') ? 'active' : ''}`}
+          aria-label="Queue"
+        >
+          <FaList size={24} />
+          <span className="nav-label">Queue</span>
         </RouterLink>
         <RouterLink 
           to="/messages" 
