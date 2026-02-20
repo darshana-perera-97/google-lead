@@ -1,7 +1,7 @@
 // ⚡ CHANGE THIS LINE TO SET YOUR BACKEND URL ⚡
 // export const API_BASE_URL = 'http://69.197.187.24:3061/api'; // Change '/api' to 'http://localhost:3060/api' for development
-export const API_BASE_URL = 'http://localhost:3061/api'; // Change '/api' to 'http://localhost:3060/api' for development
-// export const API_BASE_URL = process.env.REACT_APP_API_URL || '/api'; 
+// export const API_BASE_URL = 'http://localhost:3061/api'; // Change '/api' to 'http://localhost:3060/api' for development
+export const API_BASE_URL = process.env.REACT_APP_API_URL || '/api'; 
 
 // API Endpoints
 export const API_ENDPOINTS = {
